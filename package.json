@@ -1,0 +1,32 @@
+{
+  "name": "bonk-turbo",
+  "productName": "Bonk Turbo",
+  "version": "1.0.2",
+  "description": "Launcher do bonk.io focado em desempenho e input lag, com ferramentas de host durante a partida.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/patch-test.js",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "io.bonkturbo.launcher",
+    "productName": "Bonk Turbo",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
+  }
+}
