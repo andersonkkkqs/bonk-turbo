@@ -54,15 +54,19 @@ function patchEarlyInput(code) {
 }
 
 /**
- * Desenho sem interpolação: render(anterior, atual, alpha, ...) passa a receber alpha = 1 quando ligado,
- * mostrando o estado mais recente da simulação em vez de um ponto entre os dois últimos ticks.
+ * Desenho sem interpolação: logo antes do render da partida, alpha passa a ser 1 quando ligado, mostrando o estado
+ * mais recente da simulação em vez de um ponto entre os dois últimos ticks.
+ * A chamada de render fica intacta: mods (ex.: bonk-utilidades) procuram exatamente esse trecho.
  */
 function patchNoInterp(code) {
-  const re = new RegExp(String.raw`\((${IDX})\[(${IDX}) - 1\],\1\[\2\],(${IDX}),`, "g");
+  const re = new RegExp(
+    String.raw`(${IDX}=${ID}\(${IDX}\);)(${IDX}\[${IDX}\[\d+\]\]\((${IDX})\[(${IDX}) - 1\],\3\[\4\],(${IDX}),)`,
+    "g"
+  );
   let count = 0;
-  const out = code.replace(re, (all, arr, idx, alpha) => {
+  const out = code.replace(re, (all, before, call, _arr, _idx, alpha) => {
     count++;
-    return `(${arr}[${idx} - 1],${arr}[${idx}],(window.__btNoInterp?1:${alpha}),`;
+    return `if(window.__btNoInterp)${alpha}=1;${before}${call}`;
   });
   if (count === 0) return { code, ok: false, why: "chamada de render não encontrada" };
   return { code: out, ok: true, count };
