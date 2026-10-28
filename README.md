@@ -37,6 +37,19 @@ O jogo continua funcionando normalmente.
 As ações usam as funções do próprio motor de rede do jogo (`kickPlayer`, `banPlayer`, `changeOtherTeam`,
 `sendHostChange`, `doTeamLock`), e o servidor só as aceita do host da sala.
 
+## Mods
+
+Scripts no formato do Tampermonkey (`.user.js`), ligados e desligados na aba **Mods** do painel (F2).
+Não é preciso instalar o Tampermonkey.
+
+- Pasta dos mods: `%APPDATA%\Bonk Turbo\mods` (botão "Abrir pasta de mods" no painel).
+- Mods que vêm com o launcher ficam em `src/mods`; um arquivo com o mesmo nome na pasta do usuário o substitui.
+- Os mods ligados rodam no iframe do jogo antes de qualquer script dele (equivale a `@run-at document-start`),
+  respeitando o `@match` do cabeçalho. Ligar ou desligar um mod vale depois de recarregar o jogo.
+- Scripts que alteram o `alpha2s.js` pelo esquema do Code Injector (gancho em `appendChild` + `window.__bkPatches`)
+  funcionam junto com os patches do próprio launcher.
+- Mods que mudam a física só funcionam se todos na sala tiverem o mesmo mod ligado.
+
 ## Desenvolvimento
 
 ```

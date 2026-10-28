@@ -392,12 +392,38 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 <p class="muted" data-s="joinMsg"></p>`;
   }
 
+  let modList = null;
+  let modsChanged = false;
+  const loadMods = () =>
+    api?.listMods().then((list) => {
+      modList = list || [];
+      render();
+    });
+  function renderMods() {
+    if (!modList) {
+      void loadMods();
+      return `<p class="muted">Carregando...</p>`;
+    }
+    let html = `<p class="muted">Scripts no formato do Tampermonkey (.user.js). Ligue os que quiser; valem depois de recarregar o jogo.</p>`;
+    if (!modList.length) html += `<p class="muted">Nenhum mod instalado. Coloque arquivos .user.js na pasta de mods.</p>`;
+    for (const m of modList) {
+      html += `<div class="player"><div class="row"><span><span class="name">${esc(m.name)}</span> <span class="muted">${m.version ? "v" + esc(m.version) : ""}${m.builtin ? " · vem com o launcher" : ""}</span></span>
+        <input type="checkbox" data-mod="${esc(m.id)}"${m.enabled ? " checked" : ""}></div>${m.description ? `<div class="muted">${esc(m.description)}</div>` : ""}</div>`;
+    }
+    if (modsChanged)
+      html += `<div class="row"><button class="b" data-a="modsReload" style="flex:1;padding:6px">Recarregar o jogo para aplicar</button></div>
+        <p class="muted">Recarregar tira você da sala atual.</p>`;
+    html += `<div class="row"><button class="b" data-a="modsFolder" style="flex:1">Abrir pasta de mods</button><button class="b" data-a="modsRefresh" style="flex:1">Atualizar lista</button></div>
+      <p class="muted">Mods que mudam a física só funcionam se todos na sala tiverem o mesmo mod ligado. Instale só mods de quem você confia: eles rodam dentro do jogo.</p>`;
+    return html;
+  }
+
   function render() {
     if (!panel || !panel.classList.contains("open")) return;
     const box = panel.querySelector(`section[data-tab="${tab}"]`);
     // não redesenha enquanto o usuário digita ou arrasta algo no painel
     if (panel.contains(document.activeElement) && document.activeElement.matches("input, select")) return;
-    box.innerHTML = tab === "room" ? renderRoom() : renderPerf();
+    box.innerHTML = tab === "room" ? renderRoom() : tab === "mods" ? renderMods() : renderPerf();
   }
 
   function buildUi() {
@@ -414,8 +440,8 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 
     panel = document.createElement("div");
     panel.id = "bt-panel";
-    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button></span>
-      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section>`;
+    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="mods">Mods</button></span>
+      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="mods"></section>`;
     document.body.appendChild(panel);
     // o jogo trata teclas na janela inteira; dentro do painel elas ficam no painel
     for (const t of ["keydown", "keyup", "keypress"]) panel.addEventListener(t, (e) => e.stopPropagation());
@@ -464,6 +490,15 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
           bans.delete(el.dataset.n);
           save({ bans: [...bans] });
           return render();
+        case "modsFolder":
+          void api?.openModsFolder();
+          return;
+        case "modsRefresh":
+          modList = null;
+          return render();
+        case "modsReload":
+          void api?.reload();
+          return;
         case "join": {
           const input = panel.querySelector('[data-s="link"]');
           const msg = panel.querySelector('[data-s="joinMsg"]');
@@ -477,6 +512,14 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     });
     panel.addEventListener("change", (e) => {
       const el = e.target;
+      if (el.dataset.mod) {
+        save({ mods: { ...(S.mods || {}), [el.dataset.mod]: el.checked } });
+        const m = modList?.find((x) => x.id === el.dataset.mod);
+        if (m) m.enabled = el.checked;
+        modsChanged = true;
+        el.blur();
+        return render();
+      }
       switch (el.dataset.s) {
         case "fpsMode": {
           const was = S.fps;

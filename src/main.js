@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { SettingsStore } = require("./settings");
 const { patchGame } = require("./patcher");
+const { listMods, matches } = require("./mods");
 
 const GAME_URL = "https://bonk.io/";
 const GAME_SCRIPT = "/js/alpha2s.js";
@@ -15,6 +16,9 @@ if (process.env.BONK_TURBO_PROFILE) app.setPath("userData", process.env.BONK_TUR
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
 const store = new SettingsStore(path.join(app.getPath("userData"), "settings.json"));
+const BUILTIN_MODS = path.join(__dirname, "mods");
+const USER_MODS = path.join(app.getPath("userData"), "mods");
+fs.mkdirSync(USER_MODS, { recursive: true });
 let win = null;
 
 // Flags do Chromium: valem só na inicialização. Fora do modo VSync, o navegador não segura os quadros na taxa do monitor.
@@ -171,15 +175,43 @@ const fromBonk = (e) => e.sender === win?.webContents && e.senderFrame?.origin =
 ipcMain.handle("settings:get", (e) => (fromBonk(e) ? store.get() : null));
 // a abertura aparece só uma vez por execução do app
 let splashShown = false;
+// (e.returnValue só aceita escrita: ler devolve undefined)
 ipcMain.on("splash:take", (e) => {
-  e.returnValue = fromBonk(e) && !splashShown;
-  if (e.returnValue) splashShown = true;
+  const show = fromBonk(e) && !splashShown;
+  if (show) splashShown = true;
+  e.returnValue = show;
 });
 ipcMain.handle("settings:set", (e, patch) => {
   if (!fromBonk(e) || !patch || typeof patch !== "object") return null;
   const next = store.set(patch);
   for (const f of e.sender.mainFrame.framesInSubtree) if (f.origin === "https://bonk.io" && f !== e.senderFrame) f.send("settings:changed", next);
   return next;
+});
+// Mods: lista para o painel; o código dos ativos vai para o preload, que injeta antes do jogo carregar
+ipcMain.handle("mods:list", (e) => {
+  if (!fromBonk(e)) return null;
+  const on = store.get().mods;
+  return listMods(BUILTIN_MODS, USER_MODS).map(({ id, name, version, description, builtin }) => ({ id, name, version, description, builtin, enabled: !!on[id] }));
+});
+ipcMain.on("mods:code", (e, url) => {
+  let mods = [];
+  // roda durante o preload, quando a origem do frame ainda não está definida: vale a URL enviada pelo preload
+  // (o preload é do launcher; os scripts das páginas não têm acesso ao IPC)
+  if (e.sender === win?.webContents && typeof url === "string" && parse(url)?.origin === "https://bonk.io") {
+    try {
+      const on = store.get().mods;
+      mods = listMods(BUILTIN_MODS, USER_MODS)
+        .filter((m) => on[m.id] && matches(m.meta, url))
+        .map((m) => ({ name: m.name, code: m.code }));
+    } catch (err) {
+      console.error("[mods] não consegui ler os mods", err);
+    }
+  }
+  e.returnValue = mods;
+});
+ipcMain.handle("mods:folder", (e) => (fromBonk(e) ? shell.openPath(USER_MODS) : null));
+ipcMain.handle("app:reload", (e) => {
+  if (fromBonk(e)) e.sender.reload();
 });
 ipcMain.handle("room:join", (e, link) => (fromBonk(e) ? joinInvite(link) : null));
 ipcMain.handle("app:relaunch", (e) => {

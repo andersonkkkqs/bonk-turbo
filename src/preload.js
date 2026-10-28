@@ -5,11 +5,30 @@ const { contextBridge, ipcRenderer, webFrame } = require("electron");
 const isBonk = location.origin === "https://bonk.io";
 const isOuter = isBonk && window === window.top;
 
+// Mods ativos: rodam no mundo da página, antes de qualquer script do jogo (como o @run-at document-start do Tampermonkey).
+if (isBonk) {
+  for (const mod of ipcRenderer.sendSync("mods:code", location.href) || []) {
+    const run = (code, name) => {
+      try {
+        (0, eval)(`${code}
+//# sourceURL=bonk-turbo-mod:${encodeURIComponent(name)}`);
+      } catch (err) {
+        console.error(`[Bonk Turbo] o mod "${name}" deu erro:`, err);
+      }
+    };
+    if (contextBridge.executeInMainWorld) contextBridge.executeInMainWorld({ func: run, args: [mod.code, mod.name] });
+    else void webFrame.executeJavaScript(`(${run})(${JSON.stringify(mod.code)}, ${JSON.stringify(mod.name)})`);
+  }
+}
+
 if (isBonk) {
   contextBridge.exposeInMainWorld("bonkTurbo", {
     setSettings: (patch) => ipcRenderer.invoke("settings:set", patch),
     joinLink: (link) => ipcRenderer.invoke("room:join", String(link ?? "")),
     relaunch: () => ipcRenderer.invoke("app:relaunch"),
+    reload: () => ipcRenderer.invoke("app:reload"),
+    listMods: () => ipcRenderer.invoke("mods:list"),
+    openModsFolder: () => ipcRenderer.invoke("mods:folder"),
     onSettings: (cb) => {
       if (typeof cb === "function") ipcRenderer.on("settings:changed", (_e, s) => cb(s));
     },
