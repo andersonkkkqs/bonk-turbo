@@ -1,0 +1,32 @@
+{
+  "name": "bonk-turbo",
+  "productName": "Bonk Turbo",
+  "version": "1.0.0",
+  "description": "Launcher do bonk.io focado em reduzir o input lag.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/patch-test.js",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "io.bonkturbo.launcher",
+    "productName": "Bonk Turbo",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
+  }
+}
