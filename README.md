@@ -32,6 +32,15 @@ Junta o que importava do BonkTools Launcher e do Bonk Launcher (Ditl), sem temas
 - Skin original nos modos com time (com ou sem a borda da cor do time), esconder nomes na partida e esconder o chat
   dos jogadores.
 
+**Jogo** (aba própria no painel; mudam a física, então todos na sala precisam da mesma função ligada)
+- Física customizada (biggg v18): Menu Host no lobby com campo, gol, rede, bola, jogadores, tempo, pênaltis, Sniper
+  e modos prontos.
+- Power shot e curva (bonk-power-shot v6), na tecla Special.
+
+O código dessas duas funções é o dos scripts originais, sem alteração (`src/features`). Assim a física e a
+sincronização são idênticas às de quem usa os mesmos scripts pelo Tampermonkey, e todos jogam na mesma sala.
+Um mod da pasta com o mesmo nome de uma função ligada é ignorado, para não rodar em dobro.
+
 Se o bonk.io mudar o código e um patch não casar, ele é desligado sozinho, e o painel mostra "indisponível".
 O jogo continua funcionando normalmente.
 

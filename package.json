@@ -1,7 +1,7 @@
 {
   "name": "bonk-turbo",
   "productName": "Bonk Turbo",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Launcher do bonk.io focado em desempenho e input lag, com ferramentas de host durante a partida.",
   "main": "src/main.js",
   "private": true,

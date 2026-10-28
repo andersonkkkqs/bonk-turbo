@@ -18,6 +18,7 @@ const DEFAULTS = {
   muteChat: false,
   bans: [],
   mods: {}, // id do mod -> ligado
+  features: { biggg: false, powerShot: false }, // funções de jogo que mudam a física (todos na sala precisam)
 };
 
 const SCALES = [0.5, 0.75, 1, 1.5, 2];
@@ -34,6 +35,8 @@ function sanitize(raw) {
   if (SCALES.includes(raw.renderScale)) s.renderScale = raw.renderScale;
   if (Array.isArray(raw.bans))
     s.bans = [...new Set(raw.bans.filter((n) => typeof n === "string" && n.length > 0 && n.length <= 64).map((n) => n.toLowerCase()))].slice(0, 500);
+  if (raw.features && typeof raw.features === "object")
+    s.features = { biggg: raw.features.biggg === true, powerShot: raw.features.powerShot === true };
   if (raw.mods && typeof raw.mods === "object" && !Array.isArray(raw.mods)) {
     s.mods = {};
     for (const [id, on] of Object.entries(raw.mods).slice(0, 300)) if (typeof on === "boolean" && id.length <= 260) s.mods[id] = on;

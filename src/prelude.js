@@ -469,7 +469,7 @@ html.bt-stretch #bonkiocontainer { position:fixed !important; left:0 !important;
 html.bt-stretch :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; }
 html.bt-stretch #xpbarcontainer { display:none !important; }
 #bt-fps { position:fixed; left:6px; top:4px; z-index:2147483646; font:600 12px/1 Consolas, monospace; color:#9effa8; text-shadow:0 1px 2px #000; pointer-events:none; }
-#bt-panel { position:fixed; right:12px; top:12px; width:390px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
+#bt-panel { position:fixed; right:12px; top:12px; width:440px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
   color:#ece9f2; font:13px/1.35 "Segoe UI", system-ui, sans-serif; border:1px solid #ffffff1f; border-radius:10px; box-shadow:0 8px 30px #000a; display:none; }
 #bt-panel.open { display:block; }
 #bt-panel header { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #ffffff14; }
@@ -608,6 +608,27 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 <p class="muted">As mensagens do sistema (entradas, saídas, avisos) continuam aparecendo.${missing("nicks")}</p>`;
   }
 
+  let featuresChanged = false;
+  function renderGame() {
+    const f = S.features || {};
+    let html = `
+<p class="muted">Funções que <b>mudam a física</b> da partida. Todos na sala precisam ter a mesma função ligada (no Bonk Turbo,
+ou o mesmo script na mesma versão pelo Tampermonkey); quem não tiver joga com a física normal e a partida dessincroniza.</p>
+<div class="player"><div class="row"><span class="name">Física customizada</span><span class="muted">biggg v18</span><input type="checkbox" data-feature="biggg"${f.biggg ? " checked" : ""}></div>
+<div class="muted">Quando você é o host, aparece o botão do <b>Menu Host</b> no lobby: tamanho do campo, gol, traves e rede; tamanho,
+peso, chute e quique da bola; tamanho e velocidade dos jogadores; tempo de partida, gol de ouro, pênaltis, Sniper e modos prontos
+(1v1, 3v3, Big, Futsal, Haxball...). No chat: <b>/p</b> pausa, <b>/acrescimo</b>, <b>/time1</b> e <b>/time2</b> dão nome aos times,
+<b>/sync on</b> detecta dessincronização. O host avisa no chat quem está sem a função.</div></div>
+<div class="player"><div class="row"><span class="name">Power shot e curva</span><span class="muted">bonk-power-shot v6</span><input type="checkbox" data-feature="powerShot"${f.powerShot ? " checked" : ""}></div>
+<div class="muted">No Football, com a tecla <b>Special</b>: segure conduzindo a bola para carregar e solte para chutar mais forte.
+Correndo de lado na hora de soltar, a bola sai com curva. O host liga no chat do lobby com <b>/chute power on</b> e
+<b>/chute curva on</b> (veja <b>/chute</b>).</div></div>`;
+    if (featuresChanged)
+      html += `<div class="row"><button class="b" data-a="modsReload" style="flex:1;padding:6px">Recarregar o jogo para aplicar</button></div>
+        <p class="muted">Recarregar tira você da sala atual.</p>`;
+    return html;
+  }
+
   let modList = null;
   let modsChanged = false;
   const loadMods = () =>
@@ -639,7 +660,7 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     const box = panel.querySelector(`section[data-tab="${tab}"]`);
     // não redesenha enquanto o usuário digita ou arrasta algo no painel
     if (panel.contains(document.activeElement) && document.activeElement.matches("input, select")) return;
-    box.innerHTML = tab === "room" ? renderRoom() : tab === "mods" ? renderMods() : tab === "visual" ? renderVisual() : renderPerf();
+    box.innerHTML = tab === "room" ? renderRoom() : tab === "mods" ? renderMods() : tab === "visual" ? renderVisual() : tab === "game" ? renderGame() : renderPerf();
   }
 
   function buildUi() {
@@ -656,8 +677,8 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 
     panel = document.createElement("div");
     panel.id = "bt-panel";
-    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="visual">Visual</button><button data-tab="mods">Mods</button></span>
-      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="visual"></section><section data-tab="mods"></section>`;
+    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="visual">Visual</button><button data-tab="game">Jogo</button><button data-tab="mods">Mods</button></span>
+      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="visual"></section><section data-tab="game"></section><section data-tab="mods"></section>`;
     document.body.appendChild(panel);
     // o jogo trata teclas na janela inteira; dentro do painel elas ficam no painel
     for (const t of ["keydown", "keyup", "keypress"]) panel.addEventListener(t, (e) => e.stopPropagation());
@@ -728,6 +749,12 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     });
     panel.addEventListener("change", (e) => {
       const el = e.target;
+      if (el.dataset.feature) {
+        save({ features: { ...(S.features || {}), [el.dataset.feature]: el.checked } });
+        featuresChanged = true;
+        el.blur();
+        return render();
+      }
       if (el.dataset.mod) {
         save({ mods: { ...(S.mods || {}), [el.dataset.mod]: el.checked } });
         const m = modList?.find((x) => x.id === el.dataset.mod);

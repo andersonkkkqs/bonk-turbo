@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { SettingsStore } = require("./settings");
 const { patchGame } = require("./patcher");
-const { listMods, matches } = require("./mods");
+const { listMods, matches, parseHeader } = require("./mods");
 
 const GAME_URL = "https://bonk.io/";
 const GAME_SCRIPT = "/js/alpha2s.js";
@@ -19,6 +19,17 @@ const store = new SettingsStore(path.join(app.getPath("userData"), "settings.jso
 const BUILTIN_MODS = path.join(__dirname, "mods");
 const USER_MODS = path.join(app.getPath("userData"), "mods");
 fs.mkdirSync(USER_MODS, { recursive: true });
+
+// Funções de jogo que vêm no launcher (aba "Jogo"). O código é o dos scripts originais, sem alteração: assim a física
+// e a sincronização ficam idênticas às de quem usa o mesmo script pelo Tampermonkey, e todos jogam juntos.
+// A ordem importa: o bonk-power-shot reaproveita um patch do biggg quando os dois estão ligados.
+const FEATURES = [
+  { id: "biggg", file: "biggg.user.js" },
+  { id: "powerShot", file: "bonk-power-shot.user.js" },
+].map((f) => {
+  const code = fs.readFileSync(path.join(__dirname, "features", f.file), "utf8");
+  return { ...f, code, meta: parseHeader(code) };
+});
 let win = null;
 
 // Flags do Chromium: valem só na inicialização. Fora do modo VSync, o navegador não segura os quadros na taxa do monitor.
@@ -148,7 +159,9 @@ function createWindow() {
         const frame = wc.mainFrame.framesInSubtree.find((f) => f.url.includes("gameframe"));
         if (!frame) return console.log("[debug] sem gameframe");
         const probe = `JSON.stringify({ patches: window.__btPatches, painel: !!document.getElementById("bt-panel"),
-          esticado: document.documentElement.classList.contains("bt-stretch") })`;
+          esticado: document.documentElement.classList.contains("bt-stretch"),
+          scripts: { patches: window.__bkPatches?.length ?? 0, powerShot: !!window.__bkPowerShot, gol: typeof window.__bkGolL,
+            jogoPatchado: !!document.querySelector('script[src^="blob:"]') } })`;
         console.log("[debug] jogo", await frame.executeJavaScript(probe).catch((err) => String(err)));
         const rate = `new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })`;
         console.log("[debug] quadros/s no jogo", await frame.executeJavaScript(rate).catch((err) => String(err)));
@@ -212,11 +225,14 @@ ipcMain.on("mods:code", (e, url) => {
   // roda durante o preload, quando a origem do frame ainda não está definida: vale a URL enviada pelo preload
   // (o preload é do launcher; os scripts das páginas não têm acesso ao IPC)
   if (e.sender === win?.webContents && typeof url === "string" && parse(url)?.origin === "https://bonk.io") {
+    const { mods: on, features } = store.get();
+    const active = FEATURES.filter((f) => features[f.id] && matches(f.meta, url));
+    mods = active.map((f) => ({ name: f.meta.name, code: f.code }));
+    // um mod da pasta com o mesmo nome de uma função ligada ficaria em dobro (e dessincronizaria): fica de fora
+    const taken = new Set(active.map((f) => f.meta.name.toLowerCase()));
     try {
-      const on = store.get().mods;
-      mods = listMods(BUILTIN_MODS, USER_MODS)
-        .filter((m) => on[m.id] && matches(m.meta, url))
-        .map((m) => ({ name: m.name, code: m.code }));
+      for (const m of listMods(BUILTIN_MODS, USER_MODS))
+        if (on[m.id] && matches(m.meta, url) && !taken.has(m.name.toLowerCase())) mods.push({ name: m.name, code: m.code });
     } catch (err) {
       console.error("[mods] não consegui ler os mods", err);
     }
