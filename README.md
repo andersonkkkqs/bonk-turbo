@@ -22,8 +22,15 @@ Junta o que importava do BonkTools Launcher e do Bonk Launcher (Ditl), sem temas
 **Input lag** (patches estruturais no `alpha2s.js`, aplicados a cada carregamento)
 - Envio imediato de input: a mensagem `{i, f}` que o jogo mandaria no próximo tick sai no instante da tecla.
   O frame nunca é enviado duas vezes com conteúdo diferente (veja `src/patcher.js`).
-- Desenho sem interpolação: o render recebe alpha = 1 (estado mais recente, até 33 ms antes).
 - Contador de conexões P2P abertas.
+
+**Visual** (aba própria no painel; muda só a sua tela)
+- Previsão (extrapolação) de 0 a 50 ms: roda a física do próprio jogo alguns quadros à frente, em cópias do estado,
+  e desenha o resultado. Para antes de gols e contagens; sem a física disponível, nunca passa do estado atual.
+- Suavizar correções de 0 a 300 ms: quando a sala corrige uma posição (rollback), o jogador desliza até o lugar certo.
+- Desenho sem interpolação.
+- Skin original nos modos com time (com ou sem a borda da cor do time), esconder nomes na partida e esconder o chat
+  dos jogadores.
 
 Se o bonk.io mudar o código e um patch não casar, ele é desligado sozinho, e o painel mostra "indisponível".
 O jogo continua funcionando normalmente.

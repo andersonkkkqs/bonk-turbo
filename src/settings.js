@@ -10,6 +10,12 @@ const DEFAULTS = {
   renderScale: 1,
   earlyInput: true,
   noInterp: false,
+  extrap: 0, // ms de previsão (0 a 50)
+  smooth: 0, // ms para uma correção sumir (0 a 300)
+  origSkin: false,
+  teamBorder: true,
+  hideNicks: false,
+  muteChat: false,
   bans: [],
   mods: {}, // id do mod -> ligado
 };
@@ -21,7 +27,10 @@ function sanitize(raw) {
   if (!raw || typeof raw !== "object") return s;
   if (raw.fps === "vsync" || raw.fps === "unlimited") s.fps = raw.fps;
   else if (Number.isFinite(raw.fps)) s.fps = Math.min(3000, Math.max(30, Math.round(raw.fps)));
-  for (const k of ["showFps", "stretch", "startFullscreen", "earlyInput", "noInterp"]) if (typeof raw[k] === "boolean") s[k] = raw[k];
+  for (const k of ["showFps", "stretch", "startFullscreen", "earlyInput", "noInterp", "origSkin", "teamBorder", "hideNicks", "muteChat"])
+    if (typeof raw[k] === "boolean") s[k] = raw[k];
+  if (Number.isFinite(raw.extrap)) s.extrap = Math.min(50, Math.max(0, Math.round(raw.extrap)));
+  if (Number.isFinite(raw.smooth)) s.smooth = Math.min(300, Math.max(0, Math.round(raw.smooth)));
   if (SCALES.includes(raw.renderScale)) s.renderScale = raw.renderScale;
   if (Array.isArray(raw.bans))
     s.bans = [...new Set(raw.bans.filter((n) => typeof n === "string" && n.length > 0 && n.length <= 64).map((n) => n.toLowerCase()))].slice(0, 500);

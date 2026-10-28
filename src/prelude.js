@@ -114,10 +114,9 @@
   };
 
   // ---------------------------------------------------------------------------------------------------------------
-  // Input lag: envio imediato e desenho sem interpolação (dependem dos patches aplicados no alpha2s.js).
+  // Input lag: envio imediato (depende do patch aplicado no alpha2s.js).
   const patches = window.__btPatches || {};
   const earlyAvailable = patches.earlyInput === "ok";
-  const noInterpAvailable = patches.noInterp === "ok";
   const channel = new MessageChannel();
   channel.port1.onmessage = () => {
     if (!S.earlyInput || !earlyAvailable) return;
@@ -139,6 +138,192 @@
     if (!e.repeat) kick();
   });
   window.addEventListener("keyup", kick);
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Visual: o render da partida passa por __btPre (patch "render"). Tudo aqui só muda o que é desenhado na sua tela;
+  // a simulação e o que vai para a sala ficam iguais.
+  const FRAME_MS = 1000 / 30;
+  const visual = { lastFrameAt: 0, predictions: 0 };
+  const cloneOf = (o) => Object.assign(Object.create(Object.getPrototypeOf(o)), o);
+  const bodiesOf = (st) => {
+    const out = [];
+    st.discs?.forEach((d, i) => {
+      if (d && typeof d.x === "number") out.push(["d" + i, d]);
+    });
+    if (st.ball && typeof st.ball.x === "number") out.push(["b", st.ball]);
+    return out;
+  };
+  const playing = (st) => st && st.discs && st.fte === -1 && st.ftu === -1;
+
+  // Previsão: roda a física do próprio jogo (patch "step") alguns quadros à frente, em cópias do estado.
+  // Os outros jogadores seguem com o último input conhecido; se mudarem de direção, a imagem corrige em seguida.
+  let predBase = null;
+  let preds = [];
+  let predStopped = false;
+  let predErrors = 0;
+  const predict = (cur, f, n) => {
+    if (cur !== predBase) {
+      predBase = cur;
+      preds = [cur];
+      predStopped = false;
+    }
+    const step = window.__btStep;
+    if (predStopped || typeof step !== "function") return preds;
+    const biggg = window.__bkFis; // o mod biggg guarda estado da física entre passos: preserva
+    const saved = biggg ? biggg.salva() : null;
+    try {
+      while (preds.length <= n) {
+        const next = step(preds[preds.length - 1], f + preds.length - 1);
+        // gol, contagem ou fim de rodada no caminho: para antes (não mostra o gol antes da hora)
+        if (!playing(next)) {
+          predStopped = true;
+          break;
+        }
+        preds.push(next);
+        visual.predictions++;
+      }
+    } finally {
+      if (biggg) biggg.restaura(saved);
+    }
+    return preds;
+  };
+  const withPositions = (real, from) => {
+    const c = cloneOf(real);
+    c.discs = real.discs.map((d, i) => {
+      const p = from.discs[i];
+      return d && p ? Object.assign(cloneOf(d), { x: p.x, y: p.y, xv: p.xv, yv: p.yv, a: p.a ?? d.a }) : d;
+    });
+    if (real.ball && from.ball) c.ball = Object.assign(cloneOf(real.ball), { x: from.ball.x, y: from.ball.y, xv: from.ball.xv, yv: from.ball.yv });
+    return c;
+  };
+  const extrapolate = (prev, cur, alpha, f) => {
+    const ahead = alpha - 1 + S.extrap / FRAME_MS; // quadros depois do estado atual
+    if (ahead <= 0) return [prev, cur, alpha + S.extrap / FRAME_MS];
+    // sem a física disponível, não vai além do estado atual (prolongar em linha reta atravessa paredes)
+    if (patches.step !== "ok" || predErrors > 20 || !playing(cur)) return [prev, cur, 1];
+    try {
+      const i = Math.floor(ahead);
+      const ps = predict(cur, f, i + 1);
+      if (ps.length < 2) return [prev, cur, 1];
+      const a = Math.min(i, ps.length - 1);
+      const b = Math.min(i + 1, ps.length - 1);
+      return [a === 0 ? cur : withPositions(cur, ps[a]), withPositions(cur, ps[b]), a === b ? 1 : ahead - i];
+    } catch (err) {
+      if (++predErrors === 21) console.warn("[Bonk Turbo] previsão desligada nesta partida:", err);
+      return [prev, cur, 1];
+    }
+  };
+
+  // Suavização: quando a sala corrige o passado (rollback), quem "pulou" desliza até a posição certa.
+  const drawnAt = new Map(); // quadro -> estado desenhado como atual
+  const offsets = new Map(); // corpo -> [dx, dy] que vai diminuindo
+  let lastSmoothAt = 0;
+  const addCorrection = (old, now) => {
+    const fresh = new Map(bodiesOf(now));
+    for (const [k, v] of bodiesOf(old)) {
+      const d = fresh.get(k);
+      if (!d) {
+        offsets.delete(k);
+        continue;
+      }
+      const o = offsets.get(k) || [0, 0];
+      o[0] += v.x - d.x;
+      o[1] += v.y - d.y;
+      if (Math.abs(o[0]) + Math.abs(o[1]) > 5) offsets.delete(k); // pulo grande (renascer, gol): sem suavizar
+      else offsets.set(k, o);
+    }
+  };
+  const smooth = (prev, cur, f) => {
+    if (cur.dontInterpolate) {
+      drawnAt.clear();
+      offsets.clear();
+      return;
+    }
+    const before = drawnAt.get(f);
+    if (before && before !== cur) addCorrection(before, cur);
+    else if (!before && prev && drawnAt.get(f - 1) && drawnAt.get(f - 1) !== prev) addCorrection(drawnAt.get(f - 1), prev);
+    drawnAt.set(f, cur);
+    for (const k of drawnAt.keys()) if (k < f - 40) drawnAt.delete(k);
+    const t = performance.now();
+    const keep = Math.exp(-Math.min(t - lastSmoothAt, 200) / S.smooth);
+    lastSmoothAt = t;
+    for (const [k, o] of offsets) {
+      o[0] *= keep;
+      o[1] *= keep;
+      if (Math.abs(o[0]) + Math.abs(o[1]) < 0.002) offsets.delete(k);
+    }
+  };
+  const shifted = (st) => {
+    if (!st) return st;
+    const c = cloneOf(st);
+    if (st.discs)
+      c.discs = st.discs.map((d, i) => {
+        const o = d && offsets.get("d" + i);
+        return o ? Object.assign(cloneOf(d), { x: d.x + o[0], y: d.y + o[1] }) : d;
+      });
+    const ob = st.ball && offsets.get("b");
+    if (ob) c.ball = Object.assign(cloneOf(st.ball), { x: st.ball.x + ob[0], y: st.ball.y + ob[1] });
+    return c;
+  };
+
+  window.__btPre = (prev, cur, alpha, f) => {
+    try {
+      visual.lastFrameAt = performance.now();
+      if (!cur) return [prev, cur, alpha];
+      let r = [prev, cur, S.noInterp ? 1 : alpha];
+      if (S.smooth > 0) smooth(prev, cur, f);
+      else if (drawnAt.size) {
+        drawnAt.clear();
+        offsets.clear();
+      }
+      if (S.extrap > 0 && !cur.dontInterpolate) r = extrapolate(r[0], r[1], r[2], f);
+      if (offsets.size) r = [shifted(r[0]), shifted(r[1]), r[2]];
+      return r;
+    } catch {
+      return [prev, cur, alpha];
+    }
+  };
+
+  // Skins: o cache de texturas do jogo guarda a skin já pintada; ao trocar a opção, ele é limpo.
+  let avatarCache = null;
+  Object.defineProperty(Object.prototype, "avatarCache", {
+    configurable: true,
+    get: () => undefined,
+    set(value) {
+      Object.defineProperty(this, "avatarCache", { value, writable: true, configurable: true, enumerable: true });
+      avatarCache = value;
+    },
+  });
+
+  // Nomes acima dos jogadores (patch "nicks").
+  const nickTexts = new Set();
+  window.__btNick = (text) => {
+    nickTexts.add(text);
+    text.visible = !S.hideNicks;
+    return text;
+  };
+  const applyNicks = () => {
+    for (const t of nickTexts) {
+      if (t.destroyed) nickTexts.delete(t);
+      else t.visible = !S.hideNicks;
+    }
+  };
+
+  // Chat: esconde as mensagens dos jogadores; as do sistema ("* ...") continuam.
+  const CHATS = "#ingamechatcontent, #newbonklobby_chat_content";
+  const isPlayerLine = (el) => el.nodeType === 1 && !el.textContent.trim().startsWith("*");
+  const applyChat = (el) => {
+    if (isPlayerLine(el)) el.style.display = S.muteChat ? "none" : "";
+  };
+  const chatObserver = new MutationObserver((muts) => {
+    for (const m of muts) for (const n of m.addedNodes) if (n.parentElement?.matches(CHATS)) applyChat(n);
+  });
+  whenDom(() => {
+    for (const c of document.querySelectorAll(CHATS)) chatObserver.observe(c, { childList: true });
+  });
+  const applyChatAll = () => {
+    for (const c of document.querySelectorAll(CHATS)) for (const l of c.children) applyChat(l);
+  };
 
   // ---------------------------------------------------------------------------------------------------------------
   // P2P: conta conexões WebRTC abertas com os outros jogadores.
@@ -284,7 +469,7 @@ html.bt-stretch #bonkiocontainer { position:fixed !important; left:0 !important;
 html.bt-stretch :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; }
 html.bt-stretch #xpbarcontainer { display:none !important; }
 #bt-fps { position:fixed; left:6px; top:4px; z-index:2147483646; font:600 12px/1 Consolas, monospace; color:#9effa8; text-shadow:0 1px 2px #000; pointer-events:none; }
-#bt-panel { position:fixed; right:12px; top:12px; width:340px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
+#bt-panel { position:fixed; right:12px; top:12px; width:390px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
   color:#ece9f2; font:13px/1.35 "Segoe UI", system-ui, sans-serif; border:1px solid #ffffff1f; border-radius:10px; box-shadow:0 8px 30px #000a; display:none; }
 #bt-panel.open { display:block; }
 #bt-panel header { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #ffffff14; }
@@ -313,6 +498,7 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
   let fpsEl = null;
   let tab = "room";
 
+  let appliedSkin = null;
   const save = (patch) => {
     S = { ...S, ...patch };
     apply();
@@ -320,7 +506,15 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
   };
   const apply = () => {
     setCap(S.fps === "vsync" || S.fps === "unlimited" ? 0 : S.fps);
-    window.__btNoInterp = !!S.noInterp && noInterpAvailable;
+    const skinKey = `${!!S.origSkin}${!!S.teamBorder}`;
+    if (skinKey !== appliedSkin) {
+      window.__btOrigSkin = !!S.origSkin;
+      window.__btTeamBorder = !!S.teamBorder;
+      if (appliedSkin !== null) avatarCache?.clear?.(); // skins já pintadas são refeitas na próxima rodada
+      appliedSkin = skinKey;
+    }
+    applyNicks();
+    applyChatAll();
     document.documentElement.classList.toggle("bt-stretch", !!S.stretch);
     if (fpsEl) fpsEl.style.display = S.showFps ? "" : "none";
     window.dispatchEvent(new Event("resize"));
@@ -383,13 +577,35 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 <hr style="border-color:#ffffff14">
 <div class="row"><span>Envio imediato de input</span><input type="checkbox" data-s="earlyInput"${S.earlyInput ? " checked" : ""}></div>
 <p class="muted">Manda a tecla na hora em que você aperta, em vez de esperar o próximo tick (até 33 ms antes). ${status("earlyInput")}</p>
-<div class="row"><span>Desenho sem interpolação</span><input type="checkbox" data-s="noInterp"${S.noInterp ? " checked" : ""}></div>
-<p class="muted">Mostra o estado mais recente (até 33 ms antes), com movimento menos suave. ${status("noInterp")}</p>
 <div class="row"><span>Conexões P2P abertas</span><b>${p2pOpen()}</b></div>
 <p class="muted">Com P2P, seus inputs chegam direto aos outros jogadores sem passar pelo servidor.</p>
 <hr style="border-color:#ffffff14">
 <div class="row"><input type="text" placeholder="https://bonk.io/123456abcde" data-s="link" style="flex:1"><button class="b" data-a="join">Entrar</button></div>
 <p class="muted" data-s="joinMsg"></p>`;
+  }
+
+  function renderVisual() {
+    const ok = (k) => patches[k] === "ok";
+    const missing = (k) => (ok(k) ? "" : ` <span class="bad">indisponível nesta versão do jogo</span>`);
+    const live =
+      performance.now() - visual.lastFrameAt < 1500 ? `<span class="ok">partida sendo desenhada agora</span>` : `<span class="muted">vale durante a partida</span>`;
+    return `
+<p class="muted">Tudo aqui muda só a sua tela: a simulação e o que vai para a sala continuam iguais. ${live}</p>
+<div class="row"><span>Previsão (extrapolação)</span><b data-l="extrap">${S.extrap ? S.extrap + " ms" : "desligada"}</b></div>
+<input type="range" min="0" max="50" step="1" value="${S.extrap}" data-s="extrap">
+<p class="muted">Desenha a partida alguns milissegundos à frente, rodando a física do próprio jogo. Compensa parte do atraso do tick e da rede. Os outros jogadores são previstos com o último input deles; se mudarem de direção, a imagem corrige.${missing("step")}</p>
+<div class="row"><span>Suavizar correções</span><b data-l="smooth">${S.smooth ? S.smooth + " ms" : "desligada"}</b></div>
+<input type="range" min="0" max="300" step="10" value="${S.smooth}" data-s="smooth">
+<p class="muted">Quando a sala corrige uma posição (lag de outro jogador), o jogador desliza até o lugar certo em vez de teleportar.</p>
+<div class="row"><span>Desenho sem interpolação</span><input type="checkbox" data-s="noInterp"${S.noInterp ? " checked" : ""}></div>
+<p class="muted">Mostra sempre o último tick, sem misturar com o anterior. Com a previsão ligada, não é necessário.${missing("render")}</p>
+<hr style="border-color:#ffffff14">
+<div class="row"><span>Skin original nos modos com time</span><input type="checkbox" data-s="origSkin"${S.origSkin ? " checked" : ""}></div>
+<div class="row"><span>Manter borda da cor do time</span><input type="checkbox" data-s="teamBorder"${S.teamBorder ? " checked" : ""}></div>
+<p class="muted">Tira a pintura da cor do time das skins. Com a borda, dá para saber o time de cada um. Vale a partir da próxima rodada.${missing("skins")}</p>
+<div class="row"><span>Esconder nomes na partida</span><input type="checkbox" data-s="hideNicks"${S.hideNicks ? " checked" : ""}></div>
+<div class="row"><span>Esconder chat dos jogadores</span><input type="checkbox" data-s="muteChat"${S.muteChat ? " checked" : ""}></div>
+<p class="muted">As mensagens do sistema (entradas, saídas, avisos) continuam aparecendo.${missing("nicks")}</p>`;
   }
 
   let modList = null;
@@ -423,7 +639,7 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     const box = panel.querySelector(`section[data-tab="${tab}"]`);
     // não redesenha enquanto o usuário digita ou arrasta algo no painel
     if (panel.contains(document.activeElement) && document.activeElement.matches("input, select")) return;
-    box.innerHTML = tab === "room" ? renderRoom() : tab === "mods" ? renderMods() : renderPerf();
+    box.innerHTML = tab === "room" ? renderRoom() : tab === "mods" ? renderMods() : tab === "visual" ? renderVisual() : renderPerf();
   }
 
   function buildUi() {
@@ -440,8 +656,8 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 
     panel = document.createElement("div");
     panel.id = "bt-panel";
-    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="mods">Mods</button></span>
-      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="mods"></section>`;
+    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="visual">Visual</button><button data-tab="mods">Mods</button></span>
+      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="visual"></section><section data-tab="mods"></section>`;
     document.body.appendChild(panel);
     // o jogo trata teclas na janela inteira; dentro do painel elas ficam no painel
     for (const t of ["keydown", "keyup", "keypress"]) panel.addEventListener(t, (e) => e.stopPropagation());
@@ -537,6 +753,10 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
         case "renderScale":
           save({ renderScale: Number(el.value) });
           break;
+        case "extrap":
+        case "smooth":
+          save({ [el.dataset.s]: Number(el.value) });
+          break;
         default:
           if (el.type === "checkbox") save({ [el.dataset.s]: el.checked });
       }
@@ -544,7 +764,14 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
       render();
     });
     panel.addEventListener("input", (e) => {
-      if (e.target.dataset.s === "fpsRange") panel.querySelector('[data-s="fps"]').value = e.target.value;
+      const k = e.target.dataset.s;
+      if (k === "fpsRange") panel.querySelector('[data-s="fps"]').value = e.target.value;
+      if (k === "extrap" || k === "smooth") {
+        // aplica enquanto arrasta, para dar para sentir a diferença na hora
+        S = { ...S, [k]: Number(e.target.value) };
+        const label = panel.querySelector(`[data-l="${k}"]`);
+        if (label) label.textContent = S[k] ? `${S[k]} ms` : "desligada";
+      }
     });
 
     // F2 é capturado pelo launcher (funciona com o foco em qualquer parte da janela)

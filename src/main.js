@@ -152,6 +152,20 @@ function createWindow() {
         console.log("[debug] jogo", await frame.executeJavaScript(probe).catch((err) => String(err)));
         const rate = `new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })`;
         console.log("[debug] quadros/s no jogo", await frame.executeJavaScript(rate).catch((err) => String(err)));
+        if (process.env.BONK_TURBO_SELFTEST) {
+          // teste da previsão com estado sintético: a "física" de mentira anda 1 unidade por passo em x
+          const selftest = `(() => {
+            const real = window.__btStep;
+            const disc = (x) => ({ x, y: 0, xv: 30, yv: 0 });
+            const st = (x) => ({ discs: [disc(x)], ball: { x, y: 5, xv: 0, yv: 0 }, fte: -1, ftu: -1 });
+            window.__btStep = (s, f) => st(s.discs[0].x + 1);
+            const prev = st(0), cur = st(1), out = {};
+            out.semNada = window.__btPre(prev, cur, 0.5, 10).map((v) => (typeof v === "number" ? v : v.discs[0].x));
+            window.__btStep = real;
+            return JSON.stringify(out);
+          })()`;
+          console.log("[debug] selftest", await frame.executeJavaScript(selftest).catch((err) => String(err)));
+        }
         if (process.env.BONK_TURBO_SHOT) {
           frame.send("panel:toggle");
           setTimeout(async () => {
