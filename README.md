@@ -8,7 +8,7 @@ Junta o que importava do BonkTools Launcher e do Bonk Launcher (Ditl), sem temas
 | Tecla | Ação |
 |---|---|
 | F2 | Abre/fecha o painel (Sala e Desempenho) |
-| F11 | Tela cheia |
+| F11 | Sai/volta da tela cheia |
 | F5 | Recarrega o jogo |
 | Ctrl+Shift+F12 | Ferramentas de desenvolvedor |
 
@@ -16,7 +16,7 @@ Junta o que importava do BonkTools Launcher e do Bonk Launcher (Ditl), sem temas
 
 **Desempenho**
 - FPS: limite de 30 a 3000 (cronometrado por timer; o limite é o FPS real enquanto o PC aguentar), "Sem limite" ou VSync. Fora do VSync o Chromium roda sem trava de quadros.
-- Tela cheia 16:9 sem bordas: o iframe do jogo e o canvas ocupam a tela inteira (o jogo é esticado; a proporção original é 730×500).
+- Sempre em tela cheia 16:9 sem bordas: o app abre em tela cheia e o jogo ocupa a tela inteira (a proporção original do jogo é 730×500). F11 sai da tela cheia, se precisar.
 - Resolução de renderização de 50% a 200%.
 
 **Input lag** (patches estruturais no `alpha2s.js`, aplicados a cada carregamento)
@@ -25,12 +25,18 @@ Junta o que importava do BonkTools Launcher e do Bonk Launcher (Ditl), sem temas
 - Contador de conexões P2P abertas.
 
 **Visual** (aba própria no painel; muda só a sua tela)
-- Previsão (extrapolação) de 0 a 50 ms: roda a física do próprio jogo alguns quadros à frente, em cópias do estado,
-  e desenha o resultado. Para antes de gols e contagens; sem a física disponível, nunca passa do estado atual.
-- Suavizar correções de 0 a 300 ms: quando a sala corrige uma posição (rollback), o jogador desliza até o lugar certo.
-- Desenho sem interpolação.
-- Skin original nos modos com time (com ou sem a borda da cor do time), esconder nomes na partida e esconder o chat
-  dos jogadores.
+- Tempo real: o jogo desenha sempre um tick (33 ms) atrás da simulação; neste modo a imagem mostra o presente,
+  prevendo o tick seguinte com a física do próprio jogo. Com o envio imediato ligado, a previsão é refeita no instante
+  em que o seu input é gravado, e o seu jogador responde no mesmo quadro.
+- Previsão extra (0 a 50 ms) para compensar a rede. Para antes de gols e contagens; sem a física disponível, nunca
+  passa do estado atual (prolongar em linha reta atravessaria paredes).
+- Relógio de alta precisão: o jogo mede o tempo com Date.now (1 ms); em FPS alto vários quadros saíam na mesma
+  posição. O motor recalcula a fase do tick com performance.now.
+- Sem lixo por quadro: as cópias de estado são feitas uma vez por tick e reaproveitadas.
+- Suavizar correções (0 a 300 ms) quando a sala corrige uma posição.
+- Nitidez na tela esticada (o desenho sai com os pixels da largura real da tela), antialiasing e canvas de baixa
+  latência.
+- Skin original nos modos com time (com ou sem a borda da cor do time), esconder nomes e esconder o chat dos jogadores.
 
 **Jogo** (aba própria no painel; mudam a física, então todos na sala precisam da mesma função ligada)
 - Física customizada (biggg v18): Menu Host no lobby com campo, gol, rede, bola, jogadores, tempo, pênaltis, Sniper
@@ -46,6 +52,10 @@ O jogo continua funcionando normalmente.
 
 **Sala** (como host, inclusive no meio da partida)
 - Mover jogador de time (Espectador, Livre, Vermelho, Azul, Verde, Amarelo), kick, ban, dar host, travar times.
+- Ligar e desligar o modo de times (o mesmo botão "Teams" do lobby; nos modos com times obrigatórios, como o Football,
+  o próprio jogo não deixa).
+- Trocar o próprio time, inclusive ir para espectador: o host sempre; os outros jogadores quando os times não estão
+  travados.
 - Reiniciar partida: dispara o mesmo evento do botão Start do lobby, também no meio da partida.
 - Ban com lista salva: quem estiver nela é banido de novo ao entrar enquanto você for host.
 - Entrar por link de convite.

@@ -46,8 +46,9 @@ html, body { overflow: hidden !important; }
   margin: 0 !important; border: 0 !important; z-index: 2147483000 !important; }`;
   let key = null;
   const apply = (s) => {
-    if (s?.stretch && !key) key = webFrame.insertCSS(FILL);
-    else if (!s?.stretch && key) {
+    const fill = !!s && s.screen !== "original";
+    if (fill && !key) key = webFrame.insertCSS(FILL);
+    else if (!fill && key) {
       webFrame.removeInsertedCSS(key);
       key = null;
     }

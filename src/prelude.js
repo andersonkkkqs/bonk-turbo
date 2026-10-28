@@ -4,7 +4,7 @@
   if (window.__btLoaded) return;
   window.__btLoaded = true;
 
-  const INIT = __BT_INIT__; // { settings, autoJoin } preenchido pelo processo principal
+  const INIT = __BT_INIT__; // { settings, edition } preenchido pelo processo principal
   let S = INIT.settings;
   if (INIT.autoJoin) window.autoJoin = INIT.autoJoin;
   const api = window.bonkTurbo; // exposto pelo preload (contextBridge)
@@ -27,8 +27,26 @@
   }
 
   // ---------------------------------------------------------------------------------------------------------------
-  // Resolução de renderização (precisa valer antes de o PIXI criar os renderers).
-  const scale = Math.min(2, Math.max(0.5, Number(S.renderScale) || 1));
+  // Resolução e nitidez (precisam valer antes de o PIXI criar os renderers).
+  // Com a tela esticada, o jogo desenha numa largura de 730:500 e o navegador estica a imagem, o que borra. Com
+  // "nitidez na tela esticada", o desenho já sai com pixels suficientes para a largura real da tela.
+  const LITE = INIT.edition === "lite";
+  const screenMode = () => S.screen;
+  const stretchGain = screenMode() === "stretch" && S.sharpStretch ? Math.max(1, screen.width / screen.height / (730 / 500)) : 1;
+  const scale = Math.min(3, Math.max(0.5, (Number(S.renderScale) || 1) * stretchGain));
+  if (S.msaa || S.lowLatency) {
+    // antialiasing de verdade (MSAA) nas bordas e canvas de baixa latência (o quadro vai para a tela sem esperar o
+    // compositor da página); valem para os contextos WebGL criados daqui em diante
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+      if (type === "webgl" || type === "webgl2" || type === "experimental-webgl") {
+        attrs = { ...(attrs && typeof attrs === "object" ? attrs : {}) };
+        if (S.msaa) attrs.antialias = true;
+        if (S.lowLatency) attrs.desynchronized = true;
+      }
+      return getContext.call(this, type, attrs);
+    };
+  }
   if (scale !== 1) {
     const desc = Object.getOwnPropertyDescriptor(window, "devicePixelRatio") ?? Object.getOwnPropertyDescriptor(Window.prototype, "devicePixelRatio");
     const base = () => {
@@ -58,8 +76,12 @@
   };
   // Com limite, os quadros são cronometrados por timer, não pelo requestAnimationFrame nativo: um quadro nativo em que
   // nada é desenhado faz o Chromium desacelerar os seguintes (600 de limite virava ~130 FPS reais).
-  // Espera longa: setTimeout; perto do horário: MessageChannel (sem o atraso mínimo de 4 ms dos timers encadeados).
+  // Espera longa: dorme num setTimeout até ~1 ms antes; o último milissegundo é feito com MessageChannel (preciso, e sem
+  // o atraso mínimo de 4 ms dos timers encadeados). O timer é marcado de dentro de uma mensagem, para não encadear
+  // timers. Assim o processador não fica girando à toa entre um quadro e outro.
   const tickPort = new MessageChannel();
+  const sleepPort = new MessageChannel();
+  sleepPort.port1.onmessage = () => setTimeout(run, Math.max(0, last + interval - performance.now() - 1));
   const run = () => {
     scheduled = false;
     const now = performance.now();
@@ -83,7 +105,7 @@
     if (scheduled) return;
     scheduled = true;
     const wait = last + interval - performance.now();
-    if (wait > 6) setTimeout(run, wait - 4);
+    if (wait > 1.5) sleepPort.port2.postMessage(0);
     else tickPort.port2.postMessage(0);
   };
   window.requestAnimationFrame = (cb) => {
@@ -117,6 +139,7 @@
   // Input lag: envio imediato (depende do patch aplicado no alpha2s.js).
   const patches = window.__btPatches || {};
   const earlyAvailable = patches.earlyInput === "ok";
+  let inputEpoch = 0; // muda quando o seu input é gravado fora do tick: a previsão visual é refeita na hora
   const channel = new MessageChannel();
   channel.port1.onmessage = () => {
     if (!S.earlyInput || !earlyAvailable) return;
@@ -126,6 +149,7 @@
     window.__btEarlyCall = true;
     try {
       send();
+      inputEpoch++;
     } catch {
       /* o tick seguinte cobre */
     } finally {
@@ -142,51 +166,41 @@
   // ---------------------------------------------------------------------------------------------------------------
   // Visual: o render da partida passa por __btPre (patch "render"). Tudo aqui só muda o que é desenhado na sua tela;
   // a simulação e o que vai para a sala ficam iguais.
+  //
+  // O jogo desenha uma mistura entre o tick anterior e o atual (interpolação): a imagem fica sempre um tick (33 ms)
+  // atrás da simulação. Este motor:
+  //  1. mede o tempo dentro do tick com o relógio de alta precisão (o jogo usa Date.now, de 1 ms: em FPS alto vários
+  //     quadros seguidos saíam na mesma posição);
+  //  2. no modo tempo real desenha o presente, prevendo os próximos ticks com a física do próprio jogo;
+  //  3. refaz a previsão no instante em que o seu input é gravado (envio imediato): o seu jogador responde no mesmo
+  //     quadro em que você aperta a tecla;
+  //  4. não cria objetos por quadro: as cópias de estado são feitas uma vez por tick e reaproveitadas.
   const FRAME_MS = 1000 / 30;
-  const visual = { lastFrameAt: 0, predictions: 0 };
+  const visual = { lastFrameAt: 0, steps: 0, stepsPerSec: 0 };
+  setInterval(() => {
+    visual.stepsPerSec = visual.steps;
+    visual.steps = 0;
+  }, 1000);
   const cloneOf = (o) => Object.assign(Object.create(Object.getPrototypeOf(o)), o);
-  const bodiesOf = (st) => {
-    const out = [];
-    st.discs?.forEach((d, i) => {
-      if (d && typeof d.x === "number") out.push(["d" + i, d]);
-    });
-    if (st.ball && typeof st.ball.x === "number") out.push(["b", st.ball]);
-    return out;
-  };
   const playing = (st) => st && st.discs && st.fte === -1 && st.ftu === -1;
 
-  // Previsão: roda a física do próprio jogo (patch "step") alguns quadros à frente, em cópias do estado.
-  // Os outros jogadores seguem com o último input conhecido; se mudarem de direção, a imagem corrige em seguida.
-  let predBase = null;
-  let preds = [];
-  let predStopped = false;
-  let predErrors = 0;
-  const predict = (cur, f, n) => {
-    if (cur !== predBase) {
-      predBase = cur;
-      preds = [cur];
-      predStopped = false;
-    }
-    const step = window.__btStep;
-    if (predStopped || typeof step !== "function") return preds;
-    const biggg = window.__bkFis; // o mod biggg guarda estado da física entre passos: preserva
-    const saved = biggg ? biggg.salva() : null;
-    try {
-      while (preds.length <= n) {
-        const next = step(preds[preds.length - 1], f + preds.length - 1);
-        // gol, contagem ou fim de rodada no caminho: para antes (não mostra o gol antes da hora)
-        if (!playing(next)) {
-          predStopped = true;
-          break;
-        }
-        preds.push(next);
-        visual.predictions++;
-      }
-    } finally {
-      if (biggg) biggg.restaura(saved);
-    }
-    return preds;
+  // 1. Relógio do tick: quando (performance.now) o tick f começou. O alpha do jogo vem em degraus de 1 ms; aqui ele é
+  // refeito com precisão de microssegundos, com um ajuste lento para acompanhar o relógio do jogo.
+  const clock = { f: -1, start: 0 };
+  const tickPhase = (alpha, f) => {
+    const now = performance.now();
+    const guess = now - alpha * FRAME_MS;
+    if (f === clock.f) clock.start += (guess - clock.start) * 0.05;
+    else if (f === clock.f + 1 && Math.abs(clock.start + FRAME_MS - guess) < FRAME_MS / 2)
+      clock.start += FRAME_MS + (guess - clock.start - FRAME_MS) * 0.2;
+    else clock.start = guess;
+    clock.f = f;
+    return Math.max(0, (now - clock.start) / FRAME_MS);
   };
+
+  // 2 e 3. Previsão: estados futuros calculados pela física do jogo (patch "step"), em cópias. Os outros jogadores
+  // seguem com o último input conhecido; o seu input entra assim que é gravado.
+  const pred = { base: null, epoch: -1, states: [], views: [], stopped: false, errors: 0 };
   const withPositions = (real, from) => {
     const c = cloneOf(real);
     c.discs = real.discs.map((d, i) => {
@@ -196,44 +210,59 @@
     if (real.ball && from.ball) c.ball = Object.assign(cloneOf(real.ball), { x: from.ball.x, y: from.ball.y, xv: from.ball.xv, yv: from.ball.yv });
     return c;
   };
-  const extrapolate = (prev, cur, alpha, f) => {
-    const ahead = alpha - 1 + S.extrap / FRAME_MS; // quadros depois do estado atual
-    if (ahead <= 0) return [prev, cur, alpha + S.extrap / FRAME_MS];
-    // sem a física disponível, não vai além do estado atual (prolongar em linha reta atravessa paredes)
-    if (patches.step !== "ok" || predErrors > 20 || !playing(cur)) return [prev, cur, 1];
-    try {
-      const i = Math.floor(ahead);
-      const ps = predict(cur, f, i + 1);
-      if (ps.length < 2) return [prev, cur, 1];
-      const a = Math.min(i, ps.length - 1);
-      const b = Math.min(i + 1, ps.length - 1);
-      return [a === 0 ? cur : withPositions(cur, ps[a]), withPositions(cur, ps[b]), a === b ? 1 : ahead - i];
-    } catch (err) {
-      if (++predErrors === 21) console.warn("[Bonk Turbo] previsão desligada nesta partida:", err);
-      return [prev, cur, 1];
+  const predict = (cur, f, n) => {
+    if (cur !== pred.base || pred.epoch !== inputEpoch) {
+      pred.base = cur;
+      pred.epoch = inputEpoch;
+      pred.states = [cur];
+      pred.views = [cur];
+      pred.stopped = false;
     }
+    const step = window.__btStep;
+    if (pred.stopped || typeof step !== "function") return pred.views;
+    const biggg = window.__bkFis; // o biggg guarda estado da física entre passos: preserva
+    const saved = biggg ? biggg.salva() : null;
+    try {
+      while (pred.states.length <= n) {
+        const next = step(pred.states[pred.states.length - 1], f + pred.states.length - 1);
+        visual.steps++;
+        // gol, contagem ou fim de rodada no caminho: para antes (não mostra o gol antes da hora)
+        if (!playing(next)) {
+          pred.stopped = true;
+          break;
+        }
+        pred.states.push(next);
+        // só posições e velocidades vêm da previsão; sons, placar etc. continuam os do jogo de verdade
+        pred.views.push(withPositions(cur, next));
+      }
+    } finally {
+      if (biggg) biggg.restaura(saved);
+    }
+    return pred.views;
   };
 
   // Suavização: quando a sala corrige o passado (rollback), quem "pulou" desliza até a posição certa.
-  const drawnAt = new Map(); // quadro -> estado desenhado como atual
-  const offsets = new Map(); // corpo -> [dx, dy] que vai diminuindo
+  const drawnAt = new Map(); // tick -> estado desenhado como atual
+  const offsets = new Map(); // índice do disco (-1 = bola) -> [dx, dy], diminuindo com o tempo
   let lastSmoothAt = 0;
+  const forEachBody = (st, fn) => {
+    st.discs?.forEach((d, i) => d && typeof d.x === "number" && fn(i, d));
+    if (st.ball && typeof st.ball.x === "number") fn(-1, st.ball);
+  };
   const addCorrection = (old, now) => {
-    const fresh = new Map(bodiesOf(now));
-    for (const [k, v] of bodiesOf(old)) {
+    const fresh = new Map();
+    forEachBody(now, (k, b) => fresh.set(k, b));
+    forEachBody(old, (k, v) => {
       const d = fresh.get(k);
-      if (!d) {
-        offsets.delete(k);
-        continue;
-      }
+      if (!d) return offsets.delete(k);
       const o = offsets.get(k) || [0, 0];
       o[0] += v.x - d.x;
       o[1] += v.y - d.y;
       if (Math.abs(o[0]) + Math.abs(o[1]) > 5) offsets.delete(k); // pulo grande (renascer, gol): sem suavizar
       else offsets.set(k, o);
-    }
+    });
   };
-  const smooth = (prev, cur, f) => {
+  const trackCorrections = (prev, cur, f) => {
     if (cur.dontInterpolate) {
       drawnAt.clear();
       offsets.clear();
@@ -243,7 +272,7 @@
     if (before && before !== cur) addCorrection(before, cur);
     else if (!before && prev && drawnAt.get(f - 1) && drawnAt.get(f - 1) !== prev) addCorrection(drawnAt.get(f - 1), prev);
     drawnAt.set(f, cur);
-    for (const k of drawnAt.keys()) if (k < f - 40) drawnAt.delete(k);
+    if (drawnAt.size > 60) for (const k of drawnAt.keys()) if (k < f - 40) drawnAt.delete(k);
     const t = performance.now();
     const keep = Math.exp(-Math.min(t - lastSmoothAt, 200) / S.smooth);
     lastSmoothAt = t;
@@ -253,33 +282,57 @@
       if (Math.abs(o[0]) + Math.abs(o[1]) < 0.002) offsets.delete(k);
     }
   };
+  // 4. Cópia deslocada feita uma vez por estado e atualizada a cada quadro (sem lixo para o coletor de memória).
+  const shiftedCopies = new WeakMap();
   const shifted = (st) => {
-    if (!st) return st;
-    const c = cloneOf(st);
-    if (st.discs)
-      c.discs = st.discs.map((d, i) => {
-        const o = d && offsets.get("d" + i);
-        return o ? Object.assign(cloneOf(d), { x: d.x + o[0], y: d.y + o[1] }) : d;
-      });
-    const ob = st.ball && offsets.get("b");
-    if (ob) c.ball = Object.assign(cloneOf(st.ball), { x: st.ball.x + ob[0], y: st.ball.y + ob[1] });
+    if (!st || !offsets.size) return st;
+    let c = shiftedCopies.get(st);
+    if (!c) {
+      c = cloneOf(st);
+      if (st.discs) c.discs = st.discs.map((d) => d && cloneOf(d));
+      if (st.ball) c.ball = cloneOf(st.ball);
+      shiftedCopies.set(st, c);
+    }
+    forEachBody(st, (k, b) => {
+      const o = offsets.get(k);
+      const t = k === -1 ? c.ball : c.discs[k];
+      t.x = o ? b.x + o[0] : b.x;
+      t.y = o ? b.y + o[1] : b.y;
+    });
     return c;
   };
 
+  const out = [null, null, 0]; // reaproveitado: o render copia os valores na hora
+  const result = (a, b, alpha) => {
+    out[0] = shifted(a);
+    out[1] = shifted(b);
+    out[2] = alpha;
+    return out;
+  };
   window.__btPre = (prev, cur, alpha, f) => {
     try {
       visual.lastFrameAt = performance.now();
       if (!cur) return [prev, cur, alpha];
-      let r = [prev, cur, S.noInterp ? 1 : alpha];
-      if (S.smooth > 0) smooth(prev, cur, f);
+      if (S.smooth > 0) trackCorrections(prev, cur, f);
       else if (drawnAt.size) {
         drawnAt.clear();
         offsets.clear();
       }
-      if (S.extrap > 0 && !cur.dontInterpolate) r = extrapolate(r[0], r[1], r[2], f);
-      if (offsets.size) r = [shifted(r[0]), shifted(r[1]), r[2]];
-      return r;
-    } catch {
+      if (cur.dontInterpolate) return result(prev, cur, alpha);
+      const phase = tickPhase(alpha, f);
+      // onde desenhar, em ticks depois do atual (0 = o próprio tick atual)
+      const ahead = (S.realtime ? phase : phase - 1) + S.extrap / FRAME_MS;
+      if (ahead <= 0) return result(prev || cur, cur, Math.min(1, 1 + ahead));
+      // sem a física disponível (ou fora do jogo rolando), não passa do estado atual: em linha reta atravessaria paredes
+      if (patches.step !== "ok" || pred.errors > 20 || !playing(cur)) return result(prev || cur, cur, 1);
+      const i = Math.floor(ahead);
+      const views = predict(cur, f, i + 1);
+      if (views.length < 2) return result(prev || cur, cur, 1);
+      const a = Math.min(i, views.length - 1);
+      const b = Math.min(i + 1, views.length - 1);
+      return result(views[a], views[b], a === b ? 1 : ahead - i);
+    } catch (err) {
+      if (++pred.errors === 21) console.warn("[Bonk Turbo] previsão desligada nesta partida:", err);
       return [prev, cur, alpha];
     }
   };
@@ -429,6 +482,9 @@
         if (p) p.team = asTeam(a[2]);
         break;
       }
+      case 39: // modo de times ligado/desligado
+        room.teams = !!a[1];
+        break;
       case 19:
         room.teamLock = !!a[1];
         break;
@@ -441,7 +497,7 @@
     }
     render();
   };
-  const WANTED = new Set([2, 3, 4, 5, 6, 12, 13, 15, 18, 19, 24, 41]);
+  const WANTED = new Set([2, 3, 4, 5, 6, 12, 13, 15, 18, 19, 24, 39, 41]);
   const NativeWS = window.WebSocket;
   window.WebSocket = class extends NativeWS {
     constructor(url, protocols) {
@@ -468,6 +524,11 @@ html.bt-stretch, html.bt-stretch body { margin:0 !important; overflow:hidden !im
 html.bt-stretch #bonkiocontainer { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; margin:0 !important; border:0 !important; }
 html.bt-stretch :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; }
 html.bt-stretch #xpbarcontainer { display:none !important; }
+/* tela cheia proporcional: o jogo ocupa a altura toda, centralizado, sem distorcer (faixas escuras dos lados) */
+html.bt-fit, html.bt-fit body { margin:0 !important; overflow:hidden !important; background:#000 !important; }
+html.bt-fit #bonkiocontainer { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; margin:0 !important; border:0 !important; }
+html.bt-fit :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:50% !important; top:50% !important; transform:translate(-50%, -50%) !important; }
+html.bt-fit #xpbarcontainer { display:none !important; }
 #bt-fps { position:fixed; left:6px; top:4px; z-index:2147483646; font:600 12px/1 Consolas, monospace; color:#9effa8; text-shadow:0 1px 2px #000; pointer-events:none; }
 #bt-panel { position:fixed; right:12px; top:12px; width:440px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
   color:#ece9f2; font:13px/1.35 "Segoe UI", system-ui, sans-serif; border:1px solid #ffffff1f; border-radius:10px; box-shadow:0 8px 30px #000a; display:none; }
@@ -515,7 +576,8 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     }
     applyNicks();
     applyChatAll();
-    document.documentElement.classList.toggle("bt-stretch", !!S.stretch);
+    document.documentElement.classList.toggle("bt-stretch", screenMode() === "stretch");
+    document.documentElement.classList.toggle("bt-fit", screenMode() === "fit");
     if (fpsEl) fpsEl.style.display = S.showFps ? "" : "none";
     window.dispatchEvent(new Event("resize"));
   };
@@ -529,21 +591,50 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
     }
   };
 
+  // Modo de times: vem da sala (mensagem 39); antes de ela chegar, do texto "Teams On/Off" do lobby.
+  const teamsOn = () => {
+    if (typeof room.teams === "boolean") return room.teams;
+    const t = document.getElementById("newbonklobby_teams_middletext")?.textContent || "";
+    return /\bon\b/i.test(t) ? true : /\boff\b/i.test(t) ? false : null;
+  };
+  // times que fazem sentido no modo atual: com times, Livre não existe; sem times, só Livre e Espectador
+  const teamChoices = () => {
+    const on = teamsOn();
+    return on === true ? [0, 2, 3, 4, 5] : on === false ? [0, 1] : [0, 1, 2, 3, 4, 5];
+  };
+  const teamButtons = (p, action) =>
+    teamChoices()
+      .filter((t) => t !== p.team)
+      .map((t) => `<button class="b" data-a="${action}" data-id="${p.id}" data-t="${t}">${TEAMS[t]}</button>`)
+      .join("");
+
   function renderRoom() {
     if (!room.inRoom) return `<p class="muted">Entre numa sala para ver os jogadores.</p>`;
     const host = isHost();
-    let html = `<div class="row"><span>${host ? "Você é o host" : "Você não é o host"} · ${room.playing ? "em partida" : "no lobby"}</span>`;
-    if (host) html += `<button class="b" data-a="lock">${room.teamLock ? "Destravar times" : "Travar times"}</button>`;
-    html += `</div>`;
-    if (host && patches.restart === "ok")
-      html += `<div class="row"><button class="b" data-a="restart" style="flex:1;padding:6px">${room.playing ? "Reiniciar partida" : "Começar partida"}</button></div>`;
-    if (!host) html += `<p class="muted">As ações de host aparecem quando você é o host da sala.</p>`;
+    const on = teamsOn();
+    let html = `<div class="row"><span>${host ? "Você é o host" : "Você não é o host"} · ${room.playing ? "em partida" : "no lobby"}${
+      on === null ? "" : on ? " · com times" : " · sem times"
+    }</span></div>`;
+    if (host) {
+      // modos com times obrigatórios (Football etc.): o próprio jogo esconde o botão "Teams"
+      const forced = document.getElementById("newbonklobby_teamsbutton")?.style.visibility === "hidden";
+      html += `<div class="row">${
+        forced
+          ? `<span class="muted" style="flex:1">Este modo exige times</span>`
+          : `<button class="b" data-a="teams" style="flex:1">${on ? "Desligar modo de times" : on === false ? "Ligar modo de times" : "Ligar/desligar modo de times"}</button>`
+      }`;
+      html += `<button class="b" data-a="lock" style="flex:1">${room.teamLock ? "Destravar times" : "Travar times"}</button></div>`;
+      if (patches.restart === "ok")
+        html += `<div class="row"><button class="b" data-a="restart" style="flex:1;padding:6px">${room.playing ? "Reiniciar partida" : "Começar partida"}</button></div>`;
+    } else html += `<p class="muted">As ações de host aparecem quando você é o host da sala.</p>`;
     for (const p of room.players.values()) {
       const me = p.id === room.myId;
       html += `<div class="player"><span class="name t${p.team}">${esc(p.name)}</span> <span class="muted">${p.guest ? "convidado" : "nv " + p.level} · ${TEAMS[p.team]}${p.id === room.hostId ? " · host" : ""}${me ? " · você" : ""}</span>`;
-      if (host && !me) {
-        html += `<div class="acts">`;
-        for (const t of [0, 1, 2, 3, 4, 5]) if (t !== p.team) html += `<button class="b" data-a="team" data-id="${p.id}" data-t="${t}">${TEAMS[t]}</button>`;
+      if (me) {
+        // o próprio time: o host sempre pode trocar; os outros, quando os times não estão travados
+        if (host || !room.teamLock) html += `<div class="acts">${teamButtons(p, "myteam")}</div>`;
+      } else if (host) {
+        html += `<div class="acts">${teamButtons(p, "team")}`;
         html += `<button class="b" data-a="host" data-id="${p.id}">Dar host</button>`;
         html += `<button class="b warn" data-a="kick" data-id="${p.id}">Kick</button>`;
         html += `<button class="b warn" data-a="ban" data-id="${p.id}">Ban</button></div>`;
@@ -570,7 +661,6 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
 <div class="row"${mode === "cap" ? "" : ' style="display:none"'}><input type="range" min="30" max="3000" step="1" value="${fpsNum}" data-s="fpsRange"><input type="number" min="30" max="3000" value="${fpsNum}" data-s="fps" style="width:70px"></div>
 <p class="muted">Trocar entre VSync e os outros modos exige reiniciar o launcher.</p>
 <div class="row"><span>Mostrar FPS</span><input type="checkbox" data-s="showFps"${S.showFps ? " checked" : ""}></div>
-<div class="row"><span>Tela cheia 16:9 sem bordas (estica o jogo)</span><input type="checkbox" data-s="stretch"${S.stretch ? " checked" : ""}></div>
 <div class="row"><span>Resolução de renderização</span><select data-s="renderScale">
   ${[0.5, 0.75, 1, 1.5, 2].map((v) => `<option value="${v}"${Number(S.renderScale) === v ? " selected" : ""}>${v * 100}%</option>`).join("")}</select></div>
 <p class="muted">A resolução vale depois de recarregar o jogo (F5).</p>
@@ -591,14 +681,26 @@ html.bt-stretch #xpbarcontainer { display:none !important; }
       performance.now() - visual.lastFrameAt < 1500 ? `<span class="ok">partida sendo desenhada agora</span>` : `<span class="muted">vale durante a partida</span>`;
     return `
 <p class="muted">Tudo aqui muda só a sua tela: a simulação e o que vai para a sala continuam iguais. ${live}</p>
-<div class="row"><span>Previsão (extrapolação)</span><b data-l="extrap">${S.extrap ? S.extrap + " ms" : "desligada"}</b></div>
+<div class="row"><span><b>Tempo real</b> (recomendado)</span><input type="checkbox" data-s="realtime"${S.realtime ? " checked" : ""}></div>
+<p class="muted">O jogo desenha sempre um tick (33 ms) atrás da simulação. No tempo real, a imagem mostra o presente: o tick
+seguinte é previsto com a física do próprio jogo. Com o <b>envio imediato</b> ligado, a previsão é refeita no instante da tecla
+e o seu jogador responde no mesmo quadro.${missing("step")}</p>
+<div class="row"><span>Previsão extra (rede)</span><b data-l="extrap">${S.extrap ? S.extrap + " ms" : "nenhuma"}</b></div>
 <input type="range" min="0" max="50" step="1" value="${S.extrap}" data-s="extrap">
-<p class="muted">Desenha a partida alguns milissegundos à frente, rodando a física do próprio jogo. Compensa parte do atraso do tick e da rede. Os outros jogadores são previstos com o último input deles; se mudarem de direção, a imagem corrige.${missing("step")}</p>
+<p class="muted">Além do tempo real, desenha mais alguns milissegundos à frente para compensar o atraso da rede. Os outros
+jogadores são previstos com o último input deles; se mudarem de direção, a imagem corrige. Comece com 10 a 20 ms.</p>
 <div class="row"><span>Suavizar correções</span><b data-l="smooth">${S.smooth ? S.smooth + " ms" : "desligada"}</b></div>
 <input type="range" min="0" max="300" step="10" value="${S.smooth}" data-s="smooth">
 <p class="muted">Quando a sala corrige uma posição (lag de outro jogador), o jogador desliza até o lugar certo em vez de teleportar.</p>
-<div class="row"><span>Desenho sem interpolação</span><input type="checkbox" data-s="noInterp"${S.noInterp ? " checked" : ""}></div>
-<p class="muted">Mostra sempre o último tick, sem misturar com o anterior. Com a previsão ligada, não é necessário.${missing("render")}</p>
+<p class="muted">Física prevista agora: <b data-l="steps">${visual.stepsPerSec}</b> passos/s · o movimento usa o relógio de alta
+precisão, liso em qualquer FPS.</p>
+<hr style="border-color:#ffffff14">
+<div class="row"><span>Nitidez na tela cheia 16:9</span><input type="checkbox" data-s="sharpStretch"${S.sharpStretch ? " checked" : ""}></div>
+<p class="muted">Desenha o jogo já com os pixels da largura real da tela, em vez de aumentar uma imagem menor (usa um pouco mais de GPU).</p>
+<div class="row"><span>Antialiasing (bordas lisas)</span><input type="checkbox" data-s="msaa"${S.msaa ? " checked" : ""}></div>
+<div class="row"><span>Canvas de baixa latência (experimental)</span><input type="checkbox" data-s="lowLatency"${S.lowLatency ? " checked" : ""}></div>
+<p class="muted">O quadro vai para a tela sem esperar o compositor da página. Pode mostrar "rasgos" na imagem em alguns monitores.
+Estas opções valem depois de recarregar o jogo (F5).</p>
 <hr style="border-color:#ffffff14">
 <div class="row"><span>Skin original nos modos com time</span><input type="checkbox" data-s="origSkin"${S.origSkin ? " checked" : ""}></div>
 <div class="row"><span>Manter borda da cor do time</span><input type="checkbox" data-s="teamBorder"${S.teamBorder ? " checked" : ""}></div>
@@ -677,8 +779,17 @@ Correndo de lado na hora de soltar, a bola sai com curva. O host liga no chat do
 
     panel = document.createElement("div");
     panel.id = "bt-panel";
-    panel.innerHTML = `<header><b>Bonk Turbo</b><span class="tabs"><button data-tab="room" class="on">Sala</button><button data-tab="perf">Desempenho</button><button data-tab="visual">Visual</button><button data-tab="game">Jogo</button><button data-tab="mods">Mods</button></span>
-      <button class="b" data-a="close">✕</button></header><section data-tab="room" class="on"></section><section data-tab="perf"></section><section data-tab="visual"></section><section data-tab="game"></section><section data-tab="mods"></section>`;
+    // edição Lite: só Sala, Desempenho e Visual
+    const tabs = [
+      ["room", "Sala"],
+      ["perf", "Desempenho"],
+      ["visual", "Visual"],
+      ...(INIT.edition === "lite" ? [] : [["game", "Jogo"], ["mods", "Mods"]]),
+    ];
+    const tabButtons = tabs.map(([id, label], i) => `<button data-tab="${id}"${i ? "" : ' class="on"'}>${label}</button>`).join("");
+    const sections = tabs.map(([id], i) => `<section data-tab="${id}"${i ? "" : ' class="on"'}></section>`).join("");
+    panel.innerHTML = `<header><b>Bonk Turbo${INIT.edition === "lite" ? " Lite" : ""}</b><span class="tabs">${tabButtons}</span>
+      <button class="b" data-a="close">✕</button></header>${sections}`;
     document.body.appendChild(panel);
     // o jogo trata teclas na janela inteira; dentro do painel elas ficam no painel
     for (const t of ["keydown", "keyup", "keypress"]) panel.addEventListener(t, (e) => e.stopPropagation());
@@ -700,6 +811,15 @@ Correndo de lado na hora de soltar, a bola sai com curva. O host liga no chat do
           return;
         case "lock":
           return act((n) => n.doTeamLock(!room.teamLock));
+        case "teams": {
+          // o mesmo que o botão "Teams" do lobby: atualiza a sala, os jogadores e avisa o servidor
+          const button = document.getElementById("newbonklobby_teamsbutton");
+          if (typeof button?.onclick === "function") button.onclick();
+          else act((n) => n.sendTeamSettingsChange(!teamsOn()));
+          return;
+        }
+        case "myteam":
+          return act((n) => n.changeOwnTeam(Number(el.dataset.t)));
         case "restart":
           // mesmo evento do botão Start do lobby; funciona também no meio da partida
           for (const emit of Object.values(window.__btEmit || {})) {
@@ -777,6 +897,9 @@ Correndo de lado na hora de soltar, a bola sai com curva. O host liga no chat do
           save({ fps: v });
           break;
         }
+        case "screen":
+          save({ screen: el.value });
+          break;
         case "renderScale":
           save({ renderScale: Number(el.value) });
           break;
@@ -797,7 +920,7 @@ Correndo de lado na hora de soltar, a bola sai com curva. O host liga no chat do
         // aplica enquanto arrasta, para dar para sentir a diferença na hora
         S = { ...S, [k]: Number(e.target.value) };
         const label = panel.querySelector(`[data-l="${k}"]`);
-        if (label) label.textContent = S[k] ? `${S[k]} ms` : "desligada";
+        if (label) label.textContent = S[k] ? `${S[k]} ms` : k === "extrap" ? "nenhuma" : "desligada";
       }
     });
 

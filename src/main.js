@@ -4,7 +4,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { SettingsStore } = require("./settings");
 const { patchGame } = require("./patcher");
-const { listMods, matches, parseHeader } = require("./mods");
+
+// Edição: "full" (Sala, Desempenho, Visual, Jogo e Mods) ou "lite" (Sala, Desempenho e Visual, sem mods nem funções
+// que mudam a física). O build da Lite grava "edition": "lite" no package.json e nem inclui o código dos mods.
+const EDITION = process.env.BONK_TURBO_EDITION || require("../package.json").edition || "full";
+const FULL = EDITION !== "lite";
+const { listMods, matches, parseHeader } = FULL ? require("./mods") : {};
 
 const GAME_URL = "https://bonk.io/";
 const GAME_SCRIPT = "/js/alpha2s.js";
@@ -18,15 +23,15 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 const store = new SettingsStore(path.join(app.getPath("userData"), "settings.json"));
 const BUILTIN_MODS = path.join(__dirname, "mods");
 const USER_MODS = path.join(app.getPath("userData"), "mods");
-fs.mkdirSync(USER_MODS, { recursive: true });
+if (FULL) fs.mkdirSync(USER_MODS, { recursive: true });
 
 // Funções de jogo que vêm no launcher (aba "Jogo"). O código é o dos scripts originais, sem alteração: assim a física
 // e a sincronização ficam idênticas às de quem usa o mesmo script pelo Tampermonkey, e todos jogam juntos.
 // A ordem importa: o bonk-power-shot reaproveita um patch do biggg quando os dois estão ligados.
-const FEATURES = [
+const FEATURES = (FULL ? [
   { id: "biggg", file: "biggg.user.js" },
   { id: "powerShot", file: "bonk-power-shot.user.js" },
-].map((f) => {
+] : []).map((f) => {
   const code = fs.readFileSync(path.join(__dirname, "features", f.file), "utf8");
   return { ...f, code, meta: parseHeader(code) };
 });
@@ -61,7 +66,7 @@ function interceptGameScript(ses) {
     const upstream = await ses.fetch(req.url, { bypassCustomProtocolHandlers: true, cache: "no-cache" }).catch(() => Response.error());
     if (!upstream.ok) return upstream;
     const original = await upstream.text();
-    const init = JSON.stringify({ settings: store.get() });
+    const init = JSON.stringify({ settings: store.get(), edition: EDITION });
     let body;
     try {
       const { code, report } = patchGame(original, PRELUDE.replace("__BT_INIT__", () => init));
@@ -88,14 +93,13 @@ function createWindow() {
   interceptGameScript(ses);
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === "fullscreen" || permission === "pointerLock"));
 
-  const s = store.get();
   win = new BrowserWindow({
     width: 1600,
     height: 900,
     backgroundColor: "#000000",
-    title: "Bonk Turbo",
+    title: FULL ? "Bonk Turbo" : "Bonk Turbo Lite",
     autoHideMenuBar: true,
-    fullscreen: s.startFullscreen,
+    fullscreen: true, // sempre abre em tela cheia (F11 alterna, se precisar sair)
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       partition: PARTITION,
@@ -161,21 +165,34 @@ function createWindow() {
         const probe = `JSON.stringify({ patches: window.__btPatches, painel: !!document.getElementById("bt-panel"),
           esticado: document.documentElement.classList.contains("bt-stretch"),
           scripts: { patches: window.__bkPatches?.length ?? 0, powerShot: !!window.__bkPowerShot, gol: typeof window.__bkGolL,
-            jogoPatchado: !!document.querySelector('script[src^="blob:"]') } })`;
+            jogoPatchado: !!document.querySelector('script[src^="blob:"]') },
+          canvas: [...document.querySelectorAll("canvas")].filter((c) => c.width > 400).map((c) => c.width + "x" + c.height), dpr: devicePixelRatio })`;
         console.log("[debug] jogo", await frame.executeJavaScript(probe).catch((err) => String(err)));
         const rate = `new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })`;
         console.log("[debug] quadros/s no jogo", await frame.executeJavaScript(rate).catch((err) => String(err)));
+        if (process.env.BONK_TURBO_EVAL) {
+          // depuração: roda um script de passos no iframe do jogo e mostra o que ele devolver
+          for (const step of fs.readFileSync(process.env.BONK_TURBO_EVAL, "utf8").split(/\r?\n\/\/---\r?\n/)) {
+            const r = await frame.executeJavaScript(step).catch((err) => "ERRO " + String(err));
+            console.log("[eval]", typeof r === "string" ? r.slice(0, 1500) : JSON.stringify(r));
+          }
+          fs.writeFileSync(process.env.BONK_TURBO_EVAL + ".png", (await wc.capturePage()).toPNG());
+          console.log("[eval] print salvo");
+        }
         if (process.env.BONK_TURBO_SELFTEST) {
-          // teste da previsão com estado sintético: a "física" de mentira anda 1 unidade por passo em x
+          // teste do motor visual com estados sintéticos: a "física" de mentira anda 1 unidade por passo em x
           const selftest = `(() => {
             const real = window.__btStep;
-            const disc = (x) => ({ x, y: 0, xv: 30, yv: 0 });
-            const st = (x) => ({ discs: [disc(x)], ball: { x, y: 5, xv: 0, yv: 0 }, fte: -1, ftu: -1 });
-            window.__btStep = (s, f) => st(s.discs[0].x + 1);
-            const prev = st(0), cur = st(1), out = {};
-            out.semNada = window.__btPre(prev, cur, 0.5, 10).map((v) => (typeof v === "number" ? v : v.discs[0].x));
+            const st = (x) => ({ discs: [{ x, y: 0, xv: 30, yv: 0 }], ball: { x, y: 5, xv: 0, yv: 0 }, fte: -1, ftu: -1 });
+            let passos = 0;
+            window.__btStep = (s) => (passos++, st(s.discs[0].x + 1));
+            const prev = st(0), cur = st(1);
+            const r1 = window.__btPre(prev, cur, 0.5, 10);
+            const um = [r1[0].discs[0].x, r1[1].discs[0].x, +r1[2].toFixed(2)];
+            const r2 = window.__btPre(prev, cur, 0.5, 10);
+            const res = { quadro1: um, mesmoArray: r1 === r2, passosNoSegundo: passos };
             window.__btStep = real;
-            return JSON.stringify(out);
+            return JSON.stringify(res);
           })()`;
           console.log("[debug] selftest", await frame.executeJavaScript(selftest).catch((err) => String(err)));
         }
@@ -216,7 +233,7 @@ ipcMain.handle("settings:set", (e, patch) => {
 });
 // Mods: lista para o painel; o código dos ativos vai para o preload, que injeta antes do jogo carregar
 ipcMain.handle("mods:list", (e) => {
-  if (!fromBonk(e)) return null;
+  if (!fromBonk(e) || !FULL) return null;
   const on = store.get().mods;
   return listMods(BUILTIN_MODS, USER_MODS).map(({ id, name, version, description, builtin }) => ({ id, name, version, description, builtin, enabled: !!on[id] }));
 });
@@ -224,7 +241,7 @@ ipcMain.on("mods:code", (e, url) => {
   let mods = [];
   // roda durante o preload, quando a origem do frame ainda não está definida: vale a URL enviada pelo preload
   // (o preload é do launcher; os scripts das páginas não têm acesso ao IPC)
-  if (e.sender === win?.webContents && typeof url === "string" && parse(url)?.origin === "https://bonk.io") {
+  if (FULL && e.sender === win?.webContents && typeof url === "string" && parse(url)?.origin === "https://bonk.io") {
     const { mods: on, features } = store.get();
     const active = FEATURES.filter((f) => features[f.id] && matches(f.meta, url));
     mods = active.map((f) => ({ name: f.meta.name, code: f.code }));
@@ -239,7 +256,7 @@ ipcMain.on("mods:code", (e, url) => {
   }
   e.returnValue = mods;
 });
-ipcMain.handle("mods:folder", (e) => (fromBonk(e) ? shell.openPath(USER_MODS) : null));
+ipcMain.handle("mods:folder", (e) => (fromBonk(e) && FULL ? shell.openPath(USER_MODS) : null));
 ipcMain.handle("app:reload", (e) => {
   if (fromBonk(e)) e.sender.reload();
 });

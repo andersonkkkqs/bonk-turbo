@@ -5,17 +5,20 @@ const path = require("node:path");
 const DEFAULTS = {
   fps: 240, // número (30..3000), "unlimited" ou "vsync"
   showFps: true,
-  stretch: true, // tela cheia 16:9 sem bordas
+  screen: "stretch", // "stretch": tela cheia 16:9 sem bordas; "fit": com faixas nas laterais; "original": como no site
   startFullscreen: true,
   renderScale: 1,
   earlyInput: true,
-  noInterp: false,
-  extrap: 0, // ms de previsão (0 a 50)
+  realtime: false, // desenha o presente (prevendo o tick seguinte) em vez de um tick atrás
+  extrap: 0, // ms de previsão extra, além do tempo real (0 a 50)
   smooth: 0, // ms para uma correção sumir (0 a 300)
   origSkin: false,
   teamBorder: true,
   hideNicks: false,
   muteChat: false,
+  sharpStretch: true, // tela esticada desenhada na resolução real da tela
+  msaa: false, // antialiasing (bordas lisas)
+  lowLatency: false, // canvas de baixa latência (experimental)
   bans: [],
   mods: {}, // id do mod -> ligado
   features: { biggg: false, powerShot: false }, // funções de jogo que mudam a física (todos na sala precisam)
@@ -28,8 +31,13 @@ function sanitize(raw) {
   if (!raw || typeof raw !== "object") return s;
   if (raw.fps === "vsync" || raw.fps === "unlimited") s.fps = raw.fps;
   else if (Number.isFinite(raw.fps)) s.fps = Math.min(3000, Math.max(30, Math.round(raw.fps)));
-  for (const k of ["showFps", "stretch", "startFullscreen", "earlyInput", "noInterp", "origSkin", "teamBorder", "hideNicks", "muteChat"])
-    if (typeof raw[k] === "boolean") s[k] = raw[k];
+  const flags = ["showFps", "startFullscreen", "earlyInput", "realtime", "origSkin", "teamBorder", "hideNicks", "muteChat"];
+  for (const k of [...flags, "sharpStretch", "msaa", "lowLatency"]) if (typeof raw[k] === "boolean") s[k] = raw[k];
+  // o jogo é sempre em tela cheia 16:9 sem bordas
+  s.screen = "stretch";
+  s.startFullscreen = true;
+  // versões antigas: "desenho sem interpolação" virou o modo tempo real
+  if (typeof raw.realtime !== "boolean" && raw.noInterp === true) s.realtime = true;
   if (Number.isFinite(raw.extrap)) s.extrap = Math.min(50, Math.max(0, Math.round(raw.extrap)));
   if (Number.isFinite(raw.smooth)) s.smooth = Math.min(300, Math.max(0, Math.round(raw.smooth)));
   if (SCALES.includes(raw.renderScale)) s.renderScale = raw.renderScale;

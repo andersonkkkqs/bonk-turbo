@@ -1,0 +1,9 @@
+{
+  "appId": "io.bonkturbo.lite",
+  "productName": "Bonk Turbo Lite",
+  "files": ["src/**/*", "!src/features/**", "!src/mods/**", "!src/mods.js", "package.json"],
+  "extraMetadata": { "edition": "lite", "name": "bonk-turbo-lite", "productName": "Bonk Turbo Lite" },
+  "directories": { "output": "release" },
+  "win": { "target": "nsis", "artifactName": "Bonk Turbo Lite Setup ${version}.exe" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+}
