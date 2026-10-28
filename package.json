@@ -1,8 +1,8 @@
 {
-  "name": "bonk-turbo",
-  "productName": "Bonk Turbo",
-  "version": "1.0.0",
-  "description": "Launcher do bonk.io focado em reduzir o input lag.",
+  "name": "bonk-turbo-lite",
+  "productName": "Bonk Turbo Lite",
+  "version": "1.5.2",
+  "description": "Launcher do bonk.io focado em input lag e desempenho, com controle total do lobby.",
   "main": "src/main.js",
   "private": true,
   "scripts": {
@@ -11,14 +11,15 @@
     "dist": "electron-builder --win nsis"
   },
   "build": {
-    "appId": "io.bonkturbo.launcher",
-    "productName": "Bonk Turbo",
+    "appId": "io.bonkturbo.lite",
+    "productName": "Bonk Turbo Lite",
     "files": [
       "src/**/*",
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "Bonk Turbo Lite Setup ${version}.exe"
     },
     "nsis": {
       "oneClick": false,

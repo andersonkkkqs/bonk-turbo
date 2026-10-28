@@ -1,6 +1,6 @@
 "use strict";
 // Roda na página do bonk.io e no iframe do jogo (gameframe). Frames de outras origens (anúncios etc.) não recebem nada.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webFrame } = require("electron");
 
 const isBonk = location.origin === "https://bonk.io";
 const isOuter = isBonk && window === window.top;
@@ -8,6 +8,8 @@ const isOuter = isBonk && window === window.top;
 if (isBonk) {
   contextBridge.exposeInMainWorld("bonkTurbo", {
     setSettings: (patch) => ipcRenderer.invoke("settings:set", patch),
+    joinLink: (link) => ipcRenderer.invoke("room:join", String(link ?? "")),
+    relaunch: () => ipcRenderer.invoke("app:relaunch"),
     onSettings: (cb) => {
       if (typeof cb === "function") ipcRenderer.on("settings:changed", (_e, s) => cb(s));
     },
@@ -17,8 +19,27 @@ if (isBonk) {
   });
 }
 
-// Abertura: só na primeira página depois de abrir o app (não em F5 nem ao entrar por convite).
-if (isOuter && ipcRenderer.sendSync("splash:take")) showSplash();
+// Página de fora: com "tela cheia 16:9" ligada, o iframe do jogo cobre a janela inteira, sem margens.
+if (isOuter) {
+  const FILL = `
+html, body { overflow: hidden !important; }
+#maingameframe { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+  margin: 0 !important; border: 0 !important; z-index: 2147483000 !important; }`;
+  let key = null;
+  const apply = (s) => {
+    const fill = !!s && s.screen !== "original";
+    if (fill && !key) key = webFrame.insertCSS(FILL);
+    else if (!fill && key) {
+      webFrame.removeInsertedCSS(key);
+      key = null;
+    }
+  };
+  void ipcRenderer.invoke("settings:get").then(apply);
+  ipcRenderer.on("settings:changed", (_e, s) => apply(s));
+
+  // Abertura: só na primeira página depois de abrir o app (não em F5 nem ao entrar por convite).
+  if (ipcRenderer.sendSync("splash:take")) showSplash();
+}
 
 function showSplash() {
   const host = document.createElement("div");

@@ -1,34 +1,58 @@
-# Bonk Turbo
+# Bonk Turbo Lite
 
-Launcher do bonk.io focado em reduzir o input lag.
+Launcher do bonk.io focado em input lag e desempenho, com controle total do lobby. Sempre em tela cheia 16:9.
 
-## O que faz
+## Baixar
 
-**Envio imediato de input.** No bonk.io, o jogo só lê e envia as suas teclas no próximo tick da simulação (30 por
-segundo), então cada tecla pode esperar até 33 ms antes de sair. O Bonk Turbo envia a mesma mensagem que o jogo
-mandaria (`{i, f}`, com o mesmo número de tick) no instante em que você aperta a tecla.
-
-- Nada muda na física nem no conteúdo das mensagens: elas só saem mais cedo.
-- Um tick nunca é enviado duas vezes com conteúdo diferente (os outros jogadores ignoram a segunda mensagem do mesmo
-  tick, e isso dessincronizaria a partida). Uma mudança que chega depois do envio antecipado vai para o tick seguinte.
-- O patch casa com a forma do código do jogo, não com nomes, então sobrevive às atualizações do bonk.io. Se um dia não
-  casar, ele se desliga sozinho e o painel mostra "indisponível"; o jogo continua normal.
+Em **Releases**, baixe o `Bonk.Turbo.Lite.Setup.<versão>.exe` e instale. Se o Windows avisar que protegeu o
+computador, clique em **Mais informações** e depois em **Executar assim mesmo** (o app não tem assinatura digital).
 
 ## Atalhos
 
 | Tecla | Ação |
 |---|---|
-| F2 | Abre/fecha o painel |
-| F11 | Tela cheia |
+| F2 | Abre/fecha o painel (Sala, Desempenho e Visual) |
+| F11 | Sai/volta da tela cheia |
 | F5 | Recarrega o jogo |
+
+## Sala
+
+Como host, inclusive no meio da partida:
+- mover jogadores de time (Espectador, Livre, Vermelho, Azul, Verde, Amarelo), kick, ban, dar host;
+- travar times, ligar e desligar o modo de times, começar e reiniciar a partida;
+- trocar o próprio time ou ir para espectador;
+- lista de banidos: quem estiver nela é banido de novo ao entrar enquanto você for host.
+
+As ações usam as funções do próprio jogo, e o servidor só as aceita do host da sala.
+
+## Desempenho
+
+- **Envio imediato de input:** a tecla sai no instante em que você aperta, em vez de esperar o próximo tick do jogo
+  (até 33 ms antes). A mensagem é a mesma que o jogo mandaria, com o mesmo número de tick; um tick nunca é enviado
+  duas vezes com conteúdo diferente.
+- FPS de 30 a 3000, sem limite ou VSync. O limitador dorme até ~1 ms antes de cada quadro, sem gastar processador à toa.
+- Resolução de renderização, contador de conexões P2P e entrar por link de convite.
+
+## Visual
+
+Muda só a sua tela: a simulação e o que vai para a sala continuam iguais.
+- **Tempo real:** o bonk desenha sempre um tick (33 ms) atrás da simulação; aqui a imagem mostra o presente, prevendo
+  o tick seguinte com a física do próprio jogo. Com o envio imediato, a previsão é refeita no instante da tecla.
+- Previsão extra para compensar a rede, suavização das correções da sala, movimento liso em FPS alto (relógio de
+  alta precisão) e sem lixo de memória por quadro.
+- Nitidez na tela 16:9, antialiasing e canvas de baixa latência.
+- Skin original nos modos com time (com borda da cor do time), esconder nomes e esconder o chat dos jogadores.
+
+Os patches no código do jogo casam com a forma do código, não com nomes, então sobrevivem às atualizações do bonk.io.
+Se um dia algum não casar, ele se desliga sozinho e o painel mostra "indisponível"; o jogo continua normal.
 
 ## Desenvolvimento
 
 ```
 npm install
 npm start                                 # roda o launcher
-npm test -- caminho/para/alpha2s.js       # confere o patch num alpha2s.js real
+npm test -- caminho/para/alpha2s.js       # confere os patches num alpha2s.js real
 npm run dist                              # gera o instalador
 ```
 
-`BONK_TURBO_DEBUG=1` mostra no terminal se o patch ficou ativo.
+`BONK_TURBO_DEBUG=1` mostra no terminal o estado dos patches e os quadros por segundo do jogo.
