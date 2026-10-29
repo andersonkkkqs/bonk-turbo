@@ -1,7 +1,7 @@
 {
   "name": "bonk-turbo-lite",
   "productName": "Bonk Turbo Lite",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "description": "Launcher do bonk.io focado em input lag e desempenho, com controle total do lobby.",
   "main": "src/main.js",
   "private": true,

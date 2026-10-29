@@ -5,11 +5,12 @@ const path = require("node:path");
 const DEFAULTS = {
   fps: 240, // número (30..3000), "unlimited" ou "vsync"
   showFps: true,
-  screen: "stretch", // "stretch": tela cheia 16:9 sem bordas; "fit": com faixas nas laterais; "original": como no site
+  screen: "stretch", // "stretch": tela cheia 16:9 sem bordas; "wide": sem esticar e sem bordas; "fit": com faixas nas laterais; "original": como no site
   startFullscreen: true,
   renderScale: 1,
   earlyInput: true,
   realtime: false, // desenha o presente (prevendo o tick seguinte) em vez de um tick atrás
+  dry: false, // desenha ticks inteiros, sem transição entre eles
   extrap: 0, // ms de previsão extra, além do tempo real (0 a 50)
   smooth: 0, // ms para uma correção sumir (0 a 300)
   origSkin: false,
@@ -22,17 +23,22 @@ const DEFAULTS = {
   bans: [],
 };
 
+// Lite: feita para rodar em PC simples. Vem com tudo o que pesa desligado e com as opções de input lag ligadas; o FPS é
+// sempre um limite (VSync e "sem limite" travam PCs fracos).
+const LITE_DEFAULTS = { ...DEFAULTS, screen: "fit", sharpStretch: false, realtime: true };
+
 const SCALES = [0.5, 0.75, 1, 1.5, 2];
 
-function sanitize(raw) {
-  const s = { ...DEFAULTS };
+function sanitize(raw, edition = "full") {
+  const lite = edition === "lite";
+  const s = { ...(lite ? LITE_DEFAULTS : DEFAULTS) };
   if (!raw || typeof raw !== "object") return s;
-  if (raw.fps === "vsync" || raw.fps === "unlimited") s.fps = raw.fps;
+  if (!lite && (raw.fps === "vsync" || raw.fps === "unlimited")) s.fps = raw.fps;
   else if (Number.isFinite(raw.fps)) s.fps = Math.min(3000, Math.max(30, Math.round(raw.fps)));
   const flags = ["showFps", "startFullscreen", "earlyInput", "realtime", "origSkin", "teamBorder", "hideNicks", "muteChat"];
-  for (const k of [...flags, "sharpStretch", "msaa", "lowLatency"]) if (typeof raw[k] === "boolean") s[k] = raw[k];
-  // o jogo é sempre em tela cheia 16:9 sem bordas
-  s.screen = "stretch";
+  for (const k of [...flags, "sharpStretch", "msaa", "lowLatency", "dry"]) if (typeof raw[k] === "boolean") s[k] = raw[k];
+  // o jogo é sempre em tela cheia: esticado, amplo (sem esticar e sem bordas) ou proporcional (faixas nas laterais)
+  s.screen = ["fit", "wide"].includes(raw.screen) ? raw.screen : "stretch";
   s.startFullscreen = true;
   // versões antigas: "desenho sem interpolação" virou o modo tempo real
   if (typeof raw.realtime !== "boolean" && raw.noInterp === true) s.realtime = true;
@@ -45,19 +51,20 @@ function sanitize(raw) {
 }
 
 class SettingsStore {
-  constructor(file) {
+  constructor(file, edition) {
     this.file = file;
+    this.edition = edition;
     try {
-      this.value = sanitize(JSON.parse(fs.readFileSync(file, "utf8")));
+      this.value = sanitize(JSON.parse(fs.readFileSync(file, "utf8")), edition);
     } catch {
-      this.value = sanitize(null);
+      this.value = sanitize(null, edition);
     }
   }
   get() {
     return { ...this.value };
   }
   set(patch) {
-    this.value = sanitize({ ...this.value, ...patch });
+    this.value = sanitize({ ...this.value, ...patch }, this.edition);
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(`${this.file}.tmp`, JSON.stringify(this.value, null, 2));
@@ -69,4 +76,4 @@ class SettingsStore {
   }
 }
 
-module.exports = { SettingsStore, sanitize, DEFAULTS };
+module.exports = { SettingsStore, sanitize, DEFAULTS, LITE_DEFAULTS };

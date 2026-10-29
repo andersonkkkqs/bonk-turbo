@@ -14,7 +14,7 @@ const PRELUDE = fs.readFileSync(path.join(__dirname, "prelude.js"), "utf8");
 if (process.env.BONK_TURBO_PROFILE) app.setPath("userData", process.env.BONK_TURBO_PROFILE);
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
-const store = new SettingsStore(path.join(app.getPath("userData"), "settings.json"));
+const store = new SettingsStore(path.join(app.getPath("userData"), "settings.json"), "lite");
 let win = null;
 
 // Flags do Chromium: valem só na inicialização. Fora do modo VSync, o navegador não segura os quadros na taxa do monitor.

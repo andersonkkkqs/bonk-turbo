@@ -56,6 +56,59 @@
   }
 
   // ---------------------------------------------------------------------------------------------------------------
+  // Tela cheia ampla: o canvas cobre a tela toda e o desenho do jogo, na escala de sempre, vai centralizado nele.
+  // Nada é esticado; nas laterais aparece o que o mapa tiver além da área de 730:500 (só a sua tela muda).
+  const wideTarget = (r) => !!r.view?.closest?.("#gamerenderer, #bgreplay");
+  const hookWide = () => {
+    const proto = window.PIXI?.Renderer?.prototype;
+    if (!proto || proto.__btWide) return !!proto;
+    proto.__btWide = true;
+    const resize = proto.resize;
+    const render = proto.render;
+    proto.resize = function (w, h) {
+      // tamanho pedido pelo jogo; o desenho é feito para ele
+      this.__btW = w;
+      this.__btH = h;
+      if (screenMode() === "wide" && wideTarget(this)) return resize.call(this, innerWidth, innerHeight);
+      return resize.call(this, w, h);
+    };
+    proto.render = function (obj, target, ...rest) {
+      if (target || !obj || !this.view) return render.call(this, obj, target, ...rest);
+      if (this.__btW === undefined) {
+        this.__btW = this.screen.width;
+        this.__btH = this.screen.height;
+      }
+      const wide = screenMode() === "wide" && wideTarget(this);
+      const w = wide ? innerWidth : this.__btW;
+      const h = wide ? innerHeight : this.__btH;
+      if (this.screen.width !== w || this.screen.height !== h) resize.call(this, w, h);
+      if (!wide) return render.call(this, obj, target, ...rest);
+      const dx = (w - this.__btW) / 2;
+      const dy = (h - this.__btH) / 2;
+      // o fundo (primeiro objeto da cena) só cobre a área do jogo: no desenho, ele é alargado até as bordas da tela
+      const bg = obj.children?.[0];
+      const bgSaved = (bg instanceof PIXI.Graphics || bg instanceof PIXI.Sprite) && bg.width >= this.__btW && bg.height >= this.__btH ? [bg.x, bg.y, bg.width, bg.height] : null;
+      obj.position.x += dx;
+      obj.position.y += dy;
+      if (bgSaved) {
+        bg.x -= dx;
+        bg.y -= dy;
+        bg.width = bgSaved[2] + 2 * dx;
+        bg.height = bgSaved[3] + 2 * dy;
+      }
+      try {
+        return render.call(this, obj, target, ...rest);
+      } finally {
+        obj.position.x -= dx;
+        obj.position.y -= dy;
+        if (bgSaved) [bg.x, bg.y, bg.width, bg.height] = bgSaved;
+      }
+    };
+    return true;
+  };
+  if (!hookWide()) whenDom(hookWide);
+
+  // ---------------------------------------------------------------------------------------------------------------
   // Limitador de FPS (30 a 3000). 0 = sem limite (usa o requestAnimationFrame nativo).
   const nativeRaf = window.requestAnimationFrame.bind(window);
   const nativeCancel = window.cancelAnimationFrame.bind(window);
@@ -320,7 +373,9 @@
       if (cur.dontInterpolate) return result(prev, cur, alpha);
       const phase = tickPhase(alpha, f);
       // onde desenhar, em ticks depois do atual (0 = o próprio tick atual)
-      const ahead = (S.realtime ? phase : phase - 1) + S.extrap / FRAME_MS;
+      let ahead = (S.realtime ? phase : phase - 1) + S.extrap / FRAME_MS;
+      // resposta seca: sem deslizar entre ticks, mostra o tick inteiro (o atual ou, no tempo real, o seguinte já previsto)
+      if (S.dry) ahead = Math.ceil(ahead - 1e-6);
       if (ahead <= 0) return result(prev || cur, cur, Math.min(1, 1 + ahead));
       // sem a física disponível (ou fora do jogo rolando), não passa do estado atual: em linha reta atravessaria paredes
       if (patches.step !== "ok" || pred.errors > 20 || !playing(cur)) return result(prev || cur, cur, 1);
@@ -525,9 +580,16 @@ html.bt-stretch :is(#gamerenderer, #bgreplay) > canvas { position:fixed !importa
 html.bt-stretch #xpbarcontainer { display:none !important; }
 /* tela cheia proporcional: o jogo ocupa a altura toda, centralizado, sem distorcer (faixas escuras dos lados) */
 html.bt-fit, html.bt-fit body { margin:0 !important; overflow:hidden !important; background:#000 !important; }
-html.bt-fit #bonkiocontainer { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; margin:0 !important; border:0 !important; }
-html.bt-fit :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:50% !important; top:50% !important; transform:translate(-50%, -50%) !important; }
+html.bt-fit #bonkiocontainer { position:fixed !important; width:min(100vw, 146vh) !important; height:min(100vh, 68.4932vw) !important;
+  left:calc((100vw - min(100vw, 146vh)) / 2) !important; top:calc((100vh - min(100vh, 68.4932vw)) / 2) !important; margin:0 !important; border:0 !important; }
+html.bt-fit :is(#gamerenderer, #bgreplay) > canvas { position:absolute !important; left:0 !important; top:0 !important; width:100% !important; height:100% !important; }
 html.bt-fit #xpbarcontainer { display:none !important; }
+/* tela cheia ampla: menus e botões como no proporcional; só o canvas cobre a tela toda */
+html.bt-wide, html.bt-wide body { margin:0 !important; overflow:hidden !important; background:#000 !important; }
+html.bt-wide #bonkiocontainer { position:fixed !important; width:min(100vw, 146vh) !important; height:min(100vh, 68.4932vw) !important;
+  left:calc((100vw - min(100vw, 146vh)) / 2) !important; top:calc((100vh - min(100vh, 68.4932vw)) / 2) !important; margin:0 !important; border:0 !important; }
+html.bt-wide :is(#gamerenderer, #bgreplay) > canvas { position:fixed !important; left:0 !important; top:0 !important; width:100vw !important; height:100vh !important; }
+html.bt-wide #xpbarcontainer { display:none !important; }
 #bt-fps { position:fixed; left:6px; top:4px; z-index:2147483646; font:600 12px/1 Consolas, monospace; color:#9effa8; text-shadow:0 1px 2px #000; pointer-events:none; }
 #bt-panel { position:fixed; right:12px; top:12px; width:440px; max-height:calc(100vh - 24px); overflow:auto; z-index:2147483647; background:#14121acc; backdrop-filter:none;
   color:#ece9f2; font:13px/1.35 "Segoe UI", system-ui, sans-serif; border:1px solid #ffffff1f; border-radius:10px; box-shadow:0 8px 30px #000a; display:none; }
@@ -577,6 +639,7 @@ html.bt-fit #xpbarcontainer { display:none !important; }
     applyChatAll();
     document.documentElement.classList.toggle("bt-stretch", screenMode() === "stretch");
     document.documentElement.classList.toggle("bt-fit", screenMode() === "fit");
+    document.documentElement.classList.toggle("bt-wide", screenMode() === "wide");
     if (fpsEl) fpsEl.style.display = S.showFps ? "" : "none";
     window.dispatchEvent(new Event("resize"));
   };
@@ -652,13 +715,10 @@ html.bt-fit #xpbarcontainer { display:none !important; }
     const fpsNum = typeof S.fps === "number" ? S.fps : 240;
     const mode = typeof S.fps === "number" ? "cap" : S.fps;
     const status = (k) => (patches[k] === "ok" ? `<span class="ok">ativo no código do jogo</span>` : `<span class="bad">indisponível (${esc(patches[k] || "não aplicado")})</span>`);
+    // o FPS é sempre um limite: VSync e "sem limite" travam PCs fracos
     return `
-<div class="row"><span>Modo de FPS</span><select data-s="fpsMode">
-  <option value="cap"${mode === "cap" ? " selected" : ""}>Limite</option>
-  <option value="unlimited"${mode === "unlimited" ? " selected" : ""}>Sem limite</option>
-  <option value="vsync"${mode === "vsync" ? " selected" : ""}>VSync</option></select></div>
+<div class="row"><span>Limite de FPS</span></div>
 <div class="row"${mode === "cap" ? "" : ' style="display:none"'}><input type="range" min="30" max="3000" step="1" value="${fpsNum}" data-s="fpsRange"><input type="number" min="30" max="3000" value="${fpsNum}" data-s="fps" style="width:70px"></div>
-<p class="muted">Trocar entre VSync e os outros modos exige reiniciar o launcher.</p>
 <div class="row"><span>Mostrar FPS</span><input type="checkbox" data-s="showFps"${S.showFps ? " checked" : ""}></div>
 <div class="row"><span>Resolução de renderização</span><select data-s="renderScale">
   ${[0.5, 0.75, 1, 1.5, 2].map((v) => `<option value="${v}"${Number(S.renderScale) === v ? " selected" : ""}>${v * 100}%</option>`).join("")}</select></div>
@@ -684,6 +744,9 @@ html.bt-fit #xpbarcontainer { display:none !important; }
 <p class="muted">O jogo desenha sempre um tick (33 ms) atrás da simulação. No tempo real, a imagem mostra o presente: o tick
 seguinte é previsto com a física do próprio jogo. Com o <b>envio imediato</b> ligado, a previsão é refeita no instante da tecla
 e o seu jogador responde no mesmo quadro.${missing("step")}</p>
+<div class="row"><span>Resposta seca (sem deslizar)</span><input type="checkbox" data-s="dry"${S.dry ? " checked" : ""}></div>
+<p class="muted">Mostra cada tick inteiro de uma vez, sem a transição entre eles: menos liso, mas a resposta é imediata. Com o
+tempo real ligado, já mostra o tick seguinte inteiro, refeito no instante da tecla.</p>
 <div class="row"><span>Previsão extra (rede)</span><b data-l="extrap">${S.extrap ? S.extrap + " ms" : "nenhuma"}</b></div>
 <input type="range" min="0" max="50" step="1" value="${S.extrap}" data-s="extrap">
 <p class="muted">Além do tempo real, desenha mais alguns milissegundos à frente para compensar o atraso da rede. Os outros
@@ -694,6 +757,12 @@ jogadores são previstos com o último input deles; se mudarem de direção, a i
 <p class="muted">Física prevista agora: <b data-l="steps">${visual.stepsPerSec}</b> passos/s · o movimento usa o relógio de alta
 precisão, liso em qualquer FPS.</p>
 <hr style="border-color:#ffffff14">
+<div class="row"><span>Tela cheia</span><select data-s="screen">
+  <option value="stretch"${S.screen === "stretch" ? " selected" : ""}>Esticada (16:9 sem bordas)</option>
+  <option value="wide"${S.screen === "wide" ? " selected" : ""}>Ampla (sem esticar e sem bordas)</option>
+  <option value="fit"${S.screen === "fit" ? " selected" : ""}>Proporcional (com bordas)</option></select></div>
+<p class="muted">Ampla e proporcional mantêm o tamanho original do jogo, sem distorcer. Na ampla, a tela toda é usada: nas
+laterais aparece o resto do mapa. Na proporcional, ficam faixas nas laterais.</p>
 <div class="row"><span>Nitidez na tela cheia 16:9</span><input type="checkbox" data-s="sharpStretch"${S.sharpStretch ? " checked" : ""}></div>
 <p class="muted">Desenha o jogo já com os pixels da largura real da tela, em vez de aumentar uma imagem menor (usa um pouco mais de GPU).</p>
 <div class="row"><span>Antialiasing (bordas lisas)</span><input type="checkbox" data-s="msaa"${S.msaa ? " checked" : ""}></div>
