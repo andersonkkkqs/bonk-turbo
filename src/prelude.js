@@ -434,25 +434,6 @@
   };
 
   // ---------------------------------------------------------------------------------------------------------------
-  // P2P: conta conexões WebRTC abertas com os outros jogadores.
-  const peers = new Set();
-  const NativePC = window.RTCPeerConnection;
-  if (NativePC) {
-    window.RTCPeerConnection = class extends NativePC {
-      constructor(...args) {
-        super(...args);
-        peers.add(this);
-        const done = () => {
-          if (this.connectionState === "closed" || this.connectionState === "failed") peers.delete(this);
-          render();
-        };
-        this.addEventListener("connectionstatechange", done);
-      }
-    };
-  }
-  const p2pOpen = () => [...peers].filter((p) => p.connectionState === "connected").length;
-
-  // ---------------------------------------------------------------------------------------------------------------
   // Motor de rede do jogo: capturado quando o jogo define this.kickPlayer na instância.
   let net = null;
   Object.defineProperty(Object.prototype, "kickPlayer", {
@@ -734,8 +715,6 @@ ${LITE ? "" : `<p class="muted">Trocar entre VSync e os outros modos exige reini
 <hr style="border-color:#ffffff14">
 <div class="row"><span>Envio imediato de input</span><input type="checkbox" data-s="earlyInput"${S.earlyInput ? " checked" : ""}></div>
 <p class="muted">Manda a tecla na hora em que você aperta, em vez de esperar o próximo tick (até 33 ms antes). ${status("earlyInput")}</p>
-<div class="row"><span>Conexões P2P abertas</span><b>${p2pOpen()}</b></div>
-<p class="muted">Com P2P, seus inputs chegam direto aos outros jogadores sem passar pelo servidor.</p>
 <hr style="border-color:#ffffff14">
 <div class="row"><input type="text" placeholder="https://bonk.io/123456abcde" data-s="link" style="flex:1"><button class="b" data-a="join">Entrar</button></div>
 <p class="muted" data-s="joinMsg"></p>`;

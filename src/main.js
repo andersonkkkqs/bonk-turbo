@@ -99,7 +99,7 @@ function createWindow() {
     backgroundColor: "#000000",
     title: FULL ? "Bonk Turbo" : "Bonk Turbo Lite",
     autoHideMenuBar: true,
-    fullscreen: true, // sempre abre em tela cheia (F11 alterna, se precisar sair)
+    fullscreen: false, // abre maximizado mas com bordas/moldura (F11 alterna tela cheia real)
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       partition: PARTITION,
@@ -113,6 +113,7 @@ function createWindow() {
     },
   });
   win.setMenu(null);
+  win.maximize();
   const wc = win.webContents;
 
   wc.on("will-navigate", (e, url) => {
